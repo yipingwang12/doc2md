@@ -1,0 +1,21 @@
+[paths]
+google_drive_remote = "gdrive:Books/Libby"
+local_pdf_dirs = ["~/Papers", "~/Books"]
+output_dir = "./results"
+cache_dir = "./.doc2md_cache"
+
+[rclone]
+flags = ["--progress", "--transfers=4"]
+
+[llm]
+base_url = "http://localhost:11434"
+model = "llama3.1:8b"
+timeout = 120
+max_retries = 3
+
+[extraction]
+pymupdf_min_chars = 100
+gibberish_threshold = 0.3
+
+[processing]
+batch_size = 5

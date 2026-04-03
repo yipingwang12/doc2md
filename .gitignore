@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.doc2md_cache/
+results/
+.eggs/
+dist/
+build/
