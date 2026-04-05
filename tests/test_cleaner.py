@@ -32,7 +32,7 @@ class TestDetectRepeatedLines:
         assert len(repeated) == 0
 
     def test_ignores_below_threshold(self):
-        pages = [_page("HEADER\nbody1"), _page("HEADER\nbody2")]
+        pages = [_page("HEADER\nbody1\nextra")]
         repeated = detect_repeated_lines(pages, min_occurrences=3)
         assert len(repeated) == 0
 

@@ -14,6 +14,8 @@ class Page:
     extraction_method: str  # "pymupdf" | "surya"
     page_number: int | None = None
     content_hash: str = ""
+    block_dicts: list[dict] | None = None  # PyMuPDF block dicts for structured extraction
+    page_height: float = 0.0
 
     def __post_init__(self):
         if not self.content_hash:

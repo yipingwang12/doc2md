@@ -27,6 +27,12 @@ class Cache:
     @staticmethod
     def file_hash(path: Path) -> str:
         h = hashlib.sha256()
+        if path.is_dir():
+            for f in sorted(path.rglob("*")):
+                if f.is_file():
+                    h.update(str(f.relative_to(path)).encode())
+                    h.update(str(f.stat().st_size).encode())
+            return h.hexdigest()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
                 h.update(chunk)

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>doc2md Reader</title>
+  <link rel="stylesheet" href="reader.css">
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it/dist/markdown-it.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it-footnote/dist/markdown-it-footnote.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Top Bar: Library mode -->
+    <div class="topbar" id="topbar-library">
+      <div class="topbar-left">
+        <span class="book-title">doc2md Reader</span>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-icon" id="btn-theme-library" title="Toggle theme">&#9728;</button>
+      </div>
+    </div>
+
+    <!-- Top Bar: Reader mode -->
+    <div class="topbar" id="topbar-reader" style="display:none">
+      <div class="topbar-left">
+        <button class="btn" id="btn-back" title="Back to library">&larr; Library</button>
+        <button class="btn btn-icon" id="btn-toc" title="Toggle table of contents">&#9776;</button>
+        <span class="book-title" id="book-title-text"></span>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-icon" id="btn-font-down" title="Decrease font size">A&minus;</button>
+        <button class="btn btn-icon" id="btn-font-up" title="Increase font size">A+</button>
+        <button class="btn btn-icon" id="btn-theme" title="Toggle theme">&#9728;</button>
+      </div>
+    </div>
+
+    <!-- Library View -->
+    <div class="library-view" id="library-view">
+      <div id="library-content">
+        <div class="loading">Loading library...</div>
+      </div>
+    </div>
+
+    <!-- Reader View -->
+    <div class="reader-view" id="reader-view">
+      <div class="reader-body">
+        <!-- Sidebar TOC -->
+        <nav class="sidebar hidden" id="sidebar">
+          <div class="sidebar-title">Chapters</div>
+          <div id="toc-list"></div>
+        </nav>
+
+        <!-- Reading Pane -->
+        <div class="reading-pane">
+          <div class="page-turn-zone left" id="zone-left"></div>
+          <div class="reader-content" id="reader-content"></div>
+          <div class="page-turn-zone right" id="zone-right"></div>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="progress-bar-container">
+        <span class="page-info" id="page-info">Page 1 of 1</span>
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="reader.js"></script>
+</body>
+</html>

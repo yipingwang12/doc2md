@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def detect_chapters(blocks: list[TextBlock], llm_client: OllamaClient) -> list[Chapter]:
-    """Split blocks into chapters based on LLM-detected boundaries."""
+    """Split blocks into chapters using rule-based detection with LLM fallback."""
     headings = [
         {"index": i, "text": b.text, "level": b.heading_level, "page": b.page_index}
         for i, b in enumerate(blocks)
@@ -23,29 +23,72 @@ def detect_chapters(blocks: list[TextBlock], llm_client: OllamaClient) -> list[C
     if not headings:
         return [Chapter(title="Untitled", heading_level=1, blocks=blocks)]
 
-    chapter_starts = _detect_boundaries(headings, llm_client)
+    chapters = _detect_by_rules(blocks, headings)
+    if chapters is not None:
+        return chapters
+
+    # Rule-based detection was ambiguous — fall back to LLM
+    return _detect_by_llm(blocks, headings, llm_client)
+
+
+def _detect_by_rules(blocks: list[TextBlock], headings: list[dict]) -> list[Chapter] | None:
+    """Try to detect chapters from heading levels alone.
+
+    Returns None if the result is ambiguous and LLM should be consulted.
+    """
+    level_1 = [h for h in headings if h.get("level") == 1]
+
+    # No level-1 headings: single chapter, title = first heading
+    if not level_1:
+        first_idx = headings[0]["index"]
+        remaining = blocks[:first_idx] + blocks[first_idx + 1:]
+        return [Chapter(title=headings[0]["text"], heading_level=1, blocks=remaining)]
+
+    # One or more level-1 headings: split into chapters (with front matter if needed)
+    chapter_starts = [h["index"] for h in level_1]
+    return _build_chapters(blocks, chapter_starts)
+
+
+def _detect_by_llm(blocks: list[TextBlock], headings: list[dict], llm_client: OllamaClient) -> list[Chapter]:
+    """Use LLM to identify chapter boundaries, with rule-based fallbacks."""
+    chapter_starts = _llm_boundaries(headings, llm_client)
 
     if not chapter_starts:
-        # Fallback: use level-1 headings
         chapter_starts = [h["index"] for h in headings if h.get("level") == 1]
 
     if not chapter_starts:
-        return [Chapter(title=headings[0]["text"], heading_level=1, blocks=blocks)]
+        first_idx = headings[0]["index"]
+        remaining = blocks[:first_idx] + blocks[first_idx + 1:]
+        return [Chapter(title=headings[0]["text"], heading_level=1, blocks=remaining)]
+
+    return _build_chapters(blocks, chapter_starts)
+
+
+def _build_chapters(blocks: list[TextBlock], chapter_starts: list[int]) -> list[Chapter]:
+    """Build Chapter objects from block indices marking chapter boundaries.
+
+    Consecutive headings with no body content between them are merged into
+    a single chapter title (e.g. "Part V" + "CHINA" → "Part V — CHINA").
+    """
+    # Merge consecutive chapter starts that have only headings between them
+    merged_starts = _merge_adjacent_starts(blocks, chapter_starts)
 
     chapters = []
-    for ci, start_idx in enumerate(chapter_starts):
-        end_idx = chapter_starts[ci + 1] if ci + 1 < len(chapter_starts) else len(blocks)
-        heading = blocks[start_idx]
-        chapter_blocks = blocks[start_idx + 1:end_idx]
+    for ci, (start_idx, title) in enumerate(merged_starts):
+        next_start = merged_starts[ci + 1][0] if ci + 1 < len(merged_starts) else len(blocks)
+        # Collect blocks between this start and the next, excluding heading blocks used in the title
+        chapter_blocks = [
+            b for b in blocks[start_idx:next_start]
+            if not (b.block_type == "heading" and b.text in title)
+        ]
         chapters.append(Chapter(
-            title=heading.text,
-            heading_level=heading.heading_level or 1,
+            title=title,
+            heading_level=blocks[start_idx].heading_level or 1,
             blocks=chapter_blocks,
         ))
 
-    # Prepend blocks before first chapter as front matter
-    if chapter_starts[0] > 0:
-        front_blocks = blocks[:chapter_starts[0]]
+    if merged_starts[0][0] > 0:
+        front_blocks = blocks[:merged_starts[0][0]]
         chapters.insert(0, Chapter(
             title="Front Matter",
             heading_level=1,
@@ -55,7 +98,33 @@ def detect_chapters(blocks: list[TextBlock], llm_client: OllamaClient) -> list[C
     return chapters
 
 
-def _detect_boundaries(headings: list[dict], llm_client: OllamaClient) -> list[int]:
+def _merge_adjacent_starts(blocks: list[TextBlock], chapter_starts: list[int]) -> list[tuple[int, str]]:
+    """Merge consecutive chapter starts that have no body content between them.
+
+    Returns list of (start_index, merged_title) tuples.
+    """
+    if not chapter_starts:
+        return []
+
+    merged: list[tuple[int, str]] = []
+
+    for start_idx in chapter_starts:
+        title = blocks[start_idx].text
+
+        if merged:
+            prev_idx, prev_title = merged[-1]
+            # Check if all blocks between prev start and this one are headings
+            between = blocks[prev_idx + 1:start_idx]
+            if all(b.block_type == "heading" for b in between):
+                merged[-1] = (prev_idx, prev_title + " — " + title)
+                continue
+
+        merged.append((start_idx, title))
+
+    return merged
+
+
+def _llm_boundaries(headings: list[dict], llm_client: OllamaClient) -> list[int]:
     """Use LLM to identify which headings are chapter boundaries."""
     prompt = format_chapter_boundary(json.dumps(headings))
     try:

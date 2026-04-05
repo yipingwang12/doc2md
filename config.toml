@@ -1,5 +1,5 @@
 [paths]
-google_drive_remote = "gdrive:Books/Libby"
+google_drive_remote = "gdrive:listening/books"
 local_pdf_dirs = ["~/Papers", "~/Books"]
 output_dir = "./results"
 cache_dir = "./.doc2md_cache"

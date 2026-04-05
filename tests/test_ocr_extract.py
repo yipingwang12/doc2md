@@ -22,29 +22,35 @@ class MockPrediction:
 def reset_predictor():
     """Reset the global predictor between tests."""
     import doc2md.extract.ocr_extract as mod
-    mod._predictor = None
+    mod._foundation = None
+    mod._det_predictor = None
+    mod._rec_predictor = None
     yield
-    mod._predictor = None
+    mod._foundation = None
+    mod._det_predictor = None
+    mod._rec_predictor = None
 
 
 class TestOcrImage:
-    @patch("doc2md.extract.ocr_extract._get_predictor")
+    @patch("doc2md.extract.ocr_extract._get_predictors")
     @patch("doc2md.extract.ocr_extract.Image")
-    def test_returns_text(self, mock_image_mod, mock_get_pred):
-        mock_pred = MagicMock()
-        mock_pred.return_value = [MockPrediction(["Hello world", "Line two"])]
-        mock_get_pred.return_value = mock_pred
+    def test_returns_text(self, mock_image_mod, mock_get_preds):
+        mock_rec = MagicMock()
+        mock_det = MagicMock()
+        mock_rec.return_value = [MockPrediction(["Hello world", "Line two"])]
+        mock_get_preds.return_value = (mock_rec, mock_det)
         mock_image_mod.open.return_value = "fake_image"
 
         result = ocr_image(Path("/fake/image.png"))
         assert result == "Hello world\nLine two"
 
-    @patch("doc2md.extract.ocr_extract._get_predictor")
+    @patch("doc2md.extract.ocr_extract._get_predictors")
     @patch("doc2md.extract.ocr_extract.Image")
-    def test_empty_page(self, mock_image_mod, mock_get_pred):
-        mock_pred = MagicMock()
-        mock_pred.return_value = [MockPrediction([])]
-        mock_get_pred.return_value = mock_pred
+    def test_empty_page(self, mock_image_mod, mock_get_preds):
+        mock_rec = MagicMock()
+        mock_det = MagicMock()
+        mock_rec.return_value = [MockPrediction([])]
+        mock_get_preds.return_value = (mock_rec, mock_det)
         mock_image_mod.open.return_value = "fake_image"
 
         result = ocr_image(Path("/fake/image.png"))

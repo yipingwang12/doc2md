@@ -6,27 +6,38 @@ import logging
 from pathlib import Path
 
 from PIL import Image
-from surya.recognition import RecognitionPredictor
+from surya.recognition import DetectionPredictor, FoundationPredictor, RecognitionPredictor
 
 from doc2md.models import Page
 
 logger = logging.getLogger(__name__)
 
-_predictor: RecognitionPredictor | None = None
+_foundation: FoundationPredictor | None = None
+_det_predictor: DetectionPredictor | None = None
+_rec_predictor: RecognitionPredictor | None = None
 
 
-def _get_predictor() -> RecognitionPredictor:
-    global _predictor
-    if _predictor is None:
-        _predictor = RecognitionPredictor()
-    return _predictor
+def _get_predictors() -> tuple[RecognitionPredictor, DetectionPredictor]:
+    global _foundation, _det_predictor, _rec_predictor
+    if _rec_predictor is None:
+        _foundation = FoundationPredictor()
+        _det_predictor = DetectionPredictor()
+        _rec_predictor = RecognitionPredictor(_foundation)
+    return _rec_predictor, _det_predictor
+
+
+def detect_only(image: Image.Image) -> int:
+    """Run detection only, return number of bounding boxes found."""
+    _, det_predictor = _get_predictors()
+    results = det_predictor([image])
+    return len(results[0].bboxes)
 
 
 def ocr_image(image_path: Path) -> str:
     """Run OCR on a single image file, return extracted text."""
-    predictor = _get_predictor()
+    rec_predictor, det_predictor = _get_predictors()
     image = Image.open(image_path)
-    predictions = predictor([image])
+    predictions = rec_predictor([image], det_predictor=det_predictor)
     lines = [line.text for line in predictions[0].text_lines]
     return "\n".join(lines)
 

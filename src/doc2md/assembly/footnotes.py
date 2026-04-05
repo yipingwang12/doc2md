@@ -11,10 +11,16 @@ def link_footnotes(chapter: Chapter) -> Chapter:
     """Extract footnote blocks and link markers in body text."""
     footnotes: dict[str, str] = {}
     body_blocks: list[TextBlock] = []
+    last_footnote_id: str | None = None
 
     for block in chapter.blocks:
         if block.block_type == "footnote" and block.footnote_id:
             footnotes[block.footnote_id] = block.text
+            last_footnote_id = block.footnote_id
+        elif block.block_type == "footnote":
+            if last_footnote_id:
+                footnotes[last_footnote_id] += "\n" + block.text
+            # else: orphan footnote with no prior ID — discard
         else:
             body_blocks.append(block)
 

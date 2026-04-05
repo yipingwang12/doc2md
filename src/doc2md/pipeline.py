@@ -9,13 +9,19 @@ from doc2md.analysis.chapter_detector import detect_chapters
 from doc2md.analysis.classifier import classify_pages
 from doc2md.analysis.llm_client import OllamaClient
 from doc2md.assembly.citations import link_citations
-from doc2md.assembly.cleaner import detect_repeated_lines, strip_headers_footers
+from doc2md.assembly.cleaner import (
+    detect_boilerplate_lines,
+    detect_repeated_lines,
+    normalize_ligatures,
+    strip_headers_footers,
+)
 from doc2md.assembly.footnotes import link_footnotes
 from doc2md.assembly.merger import merge_chapter_text
 from doc2md.cache import Cache
 from doc2md.config import Config
 from doc2md.extract.detect import extract_auto
 from doc2md.extract.ocr_extract import extract_screenshots
+from doc2md.extract.screenshot_extract import extract_screenshot_spread, is_libby_spread
 from doc2md.ingest.file_scanner import ScanResult, scan_directories
 from doc2md.models import Document, Page
 from doc2md.ordering.dedup import deduplicate
@@ -41,12 +47,13 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     )
 
     doc_name = path.stem if path.is_file() else path.name
+    is_libby = path.is_dir() and is_libby_spread(path)
 
     # Stage 1: Extract
     completed = cache.get_completed_stages(path)
     if "extract" not in completed or force:
         if path.is_dir():
-            pages = extract_screenshots(path)
+            pages = extract_screenshot_spread(path) if is_libby else extract_screenshots(path)
         else:
             pages = extract_auto(
                 path,
@@ -57,7 +64,7 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     else:
         # Re-extract since we don't persist intermediate pages yet
         if path.is_dir():
-            pages = extract_screenshots(path)
+            pages = extract_screenshot_spread(path) if is_libby else extract_screenshots(path)
         else:
             pages = extract_auto(path)
 
@@ -65,12 +72,17 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
         logger.warning("No pages extracted from %s", path)
         return []
 
+    # Stage 1b: Normalize ligatures
+    for page in pages:
+        page.raw_text = normalize_ligatures(page.raw_text)
+
     # Stage 2: Clean headers/footers
     repeated = detect_repeated_lines(pages)
-    pages = strip_headers_footers(pages, repeated)
+    boilerplate = detect_boilerplate_lines(pages)
+    pages = strip_headers_footers(pages, repeated | boilerplate)
 
-    # Stage 3: Dedup and reorder (for screenshots)
-    if path.is_dir():
+    # Stage 3: Dedup and reorder (for non-Libby screenshots only)
+    if path.is_dir() and not is_libby:
         pages = deduplicate(pages, llm_client=llm_client)
         pages = detect_page_numbers(pages, llm_client)
         pages = reorder_pages(pages)
@@ -80,7 +92,8 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     cache.mark_stage(path, "order")
 
     # Stage 4: Classify
-    blocks = classify_pages(pages, llm_client)
+    all_repeated = repeated | boilerplate
+    blocks = classify_pages(pages, llm_client, repeated_lines=all_repeated)
     cache.mark_stage(path, "classify")
 
     # Stage 5: Detect chapters
@@ -89,9 +102,9 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     # Stage 6: Assemble
     assembled = []
     for chapter in chapters:
-        chapter = merge_chapter_text(chapter)
         chapter = link_footnotes(chapter)
         chapter = link_citations(chapter)
+        chapter = merge_chapter_text(chapter)
         assembled.append(chapter)
     cache.mark_stage(path, "assemble")
 
