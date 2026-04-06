@@ -6,6 +6,7 @@ from doc2md.assembly.cleaner import (
     detect_repeated_lines,
     fix_hyphenation,
     join_broken_sentences,
+    normalize_ligatures,
     strip_headers_footers,
 )
 from doc2md.models import Page
@@ -49,6 +50,49 @@ class TestStripHeadersFooters:
         pages = [_page("content")]
         result = strip_headers_footers(pages, set())
         assert result[0].raw_text == "content"
+
+
+class TestNormalizeLigatures:
+    def test_ligature_fi(self):
+        assert normalize_ligatures("ﬁnd") == "find"
+
+    def test_ligature_fl(self):
+        assert normalize_ligatures("ﬂow") == "flow"
+
+    def test_pua_digit_single(self):
+        """U+F731 = '1' in decorative PDF font."""
+        assert normalize_ligatures("\uF731") == "1"
+
+    def test_pua_digit_multi(self):
+        """U+F731 U+F730 = '10'."""
+        assert normalize_ligatures("\uF731\uF730") == "10"
+
+    def test_pua_all_digits(self):
+        """U+F730–U+F739 map to '0'–'9'."""
+        pua = "".join(chr(0xF730 + i) for i in range(10))
+        assert normalize_ligatures(pua) == "0123456789"
+
+    def test_pua_lowercase_letters(self):
+        """U+F761–U+F77A map to 'a'–'z'."""
+        pua = "".join(chr(0xF700 + ord(c)) for c in "volume")
+        assert normalize_ligatures(pua) == "volume"
+
+    def test_pua_mixed_with_normal_text(self):
+        """PUA chars mixed with regular text."""
+        text = "# \uF731\uF735\n\n### THE TWELFTH-CENTURY"
+        assert normalize_ligatures(text) == "# 15\n\n### THE TWELFTH-CENTURY"
+
+    def test_pua_chapter_title_real_case(self):
+        """Real case from cambridge_science_v2: chapter number as PUA."""
+        text = "\uF731"
+        assert normalize_ligatures(text) == "1"
+
+    def test_no_pua_unchanged(self):
+        assert normalize_ligatures("normal text 123") == "normal text 123"
+
+    def test_ligatures_and_pua_combined(self):
+        text = "ﬁnd chapter \uF732\uF737"
+        assert normalize_ligatures(text) == "find chapter 27"
 
 
 class TestFixHyphenation:

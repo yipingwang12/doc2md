@@ -9,11 +9,22 @@ from doc2md.models import Page
 
 LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "ﬆ": "st"}
 
+# PDF Private Use Area font encoding: U+F7XX → chr(0xXX).
+# Common in PDFs using decorative fonts (e.g. AGaramond-Titling) that remap
+# standard ASCII characters to PUA codepoints. PyMuPDF extracts these as raw
+# Unicode, rendering as boxes in the browser.
+_PUA_RE = re.compile(r"[\uF720-\uF77E]+")
+
+
+def _replace_pua(match: re.Match) -> str:
+    return "".join(chr(ord(c) - 0xF700) for c in match.group())
+
 
 def normalize_ligatures(text: str) -> str:
     """Replace Unicode ligature characters with their ASCII equivalents."""
     for lig, replacement in LIGATURES.items():
         text = text.replace(lig, replacement)
+    text = _PUA_RE.sub(_replace_pua, text)
     return text
 
 
