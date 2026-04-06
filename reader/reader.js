@@ -24,6 +24,7 @@ const state = {
   sidebarVisible: false,
   chapterWords: 0,
   bookWords: 0,
+  wordsBeforeChapter: 0,
 };
 
 // --- Markdown Setup ---
@@ -195,6 +196,15 @@ async function openChapter(bookId, chapterId) {
     state.chapterWords = chapter.words || 0;
     state.bookWords = book?.words || 0;
 
+    // Sum words of all chapters before the current one
+    state.wordsBeforeChapter = 0;
+    if (book) {
+      for (const ch of book.chapters) {
+        if (ch.id === chapterId) break;
+        state.wordsBeforeChapter += ch.words || 0;
+      }
+    }
+
     // Restore page position if returning to same chapter
     requestAnimationFrame(() => {
       recalcPages();
@@ -245,14 +255,9 @@ function renderChapter(markdownText) {
 // --- Pagination ---
 
 function getContentDimensions() {
-  const pane = $('.reading-pane');
-  const rect = pane.getBoundingClientRect();
-  const style = window.getComputedStyle(pane);
-  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-  const contentWidth = rect.width - padX;
-  const contentHeight = rect.height - padY;
-  return { contentWidth, contentHeight };
+  const inner = $('.reading-pane-inner');
+  const rect = inner.getBoundingClientRect();
+  return { contentWidth: rect.width, contentHeight: rect.height };
 }
 
 const COLUMNS = 2;
@@ -262,21 +267,27 @@ function recalcPages() {
   const container = $('#reader-content');
   const { contentWidth, contentHeight } = getContentDimensions();
 
-  // Two columns per page spread, with gap between columns
-  const colWidth = Math.floor((contentWidth - COLUMN_GAP * (COLUMNS - 1)) / COLUMNS);
+  const inner = $('.reading-pane-inner');
   container.style.height = contentHeight + 'px';
-  container.style.columnWidth = colWidth + 'px';
+  container.style.columnCount = COLUMNS;
   container.style.columnGap = COLUMN_GAP + 'px';
+  container.style.columnWidth = 'auto';
+  container.style.transform = 'none';
 
-  // Reset transform to measure true scrollWidth
-  container.style.transition = 'none';
-  container.style.transform = 'translateX(0)';
+  // Measure total scrollable width
+  inner.scrollLeft = 0;
   void container.offsetHeight;
 
-  // Each "page" spans the full content width (2 columns + gap)
-  // Add a small extra gap between page spreads to prevent bleed
-  const spreadWidth = contentWidth;
-  state.totalPages = Math.max(1, Math.round(container.scrollWidth / spreadWidth));
+  // Measure the actual column step from the browser's rendered layout.
+  // column-count:2 makes the browser choose a column width, and each column
+  // occupies (actualColWidth + gap). We need to step by exactly 2 of those.
+  const actualColStep = _measureColumnStep(container);
+  state.pageStep = actualColStep * COLUMNS;
+
+  // Set inner width to match pageStep exactly so overflow clips at column boundary
+  inner.style.width = state.pageStep + 'px';
+
+  state.totalPages = Math.max(1, Math.round(container.scrollWidth / state.pageStep));
 
   if (state.currentPage >= state.totalPages) {
     state.currentPage = state.totalPages - 1;
@@ -286,12 +297,37 @@ function recalcPages() {
   updateProgress();
 }
 
+function _measureColumnStep(container) {
+  // Find the actual column width by measuring where block elements start.
+  // The browser chooses column widths that may not match our calculations.
+  const els = container.querySelectorAll('p, h1, h2, h3, blockquote, li');
+  const xSet = new Set();
+  const baseX = container.getBoundingClientRect().left;
+  for (const el of els) {
+    xSet.add(Math.round(el.getBoundingClientRect().left - baseX));
+    if (xSet.size >= 4) break;  // only need a few to find the step
+  }
+  const positions = [...xSet].sort((a, b) => a - b);
+  // Find the first positive step between column starts
+  for (let i = 1; i < positions.length; i++) {
+    const step = positions[i] - positions[i - 1];
+    if (step > 100) return step;  // must be a real column gap, not padding
+  }
+  // Fallback: assume contentWidth / COLUMNS + gap
+  const style = window.getComputedStyle(container);
+  const gap = parseFloat(style.columnGap) || 0;
+  return (container.clientWidth + gap) / COLUMNS;
+}
+
 function applyPageTransform(animate = true) {
-  const container = $('#reader-content');
-  const { contentWidth } = getContentDimensions();
-  const offset = state.currentPage * contentWidth;
-  container.style.transition = animate ? 'transform 0.3s ease' : 'none';
-  container.style.transform = `translateX(${-offset}px)`;
+  const inner = $('.reading-pane-inner');
+  const offset = state.currentPage * state.pageStep;
+  if (animate) {
+    inner.style.scrollBehavior = 'smooth';
+  } else {
+    inner.style.scrollBehavior = 'auto';
+  }
+  inner.scrollLeft = offset;
 }
 
 function goToPage(page) {
@@ -314,20 +350,27 @@ function prevPage() {
   }
 }
 
-function formatWords(n) {
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return String(n);
+function fmt(n) {
+  return n.toLocaleString();
 }
 
 function updateProgress() {
-  const pct = state.totalPages > 1 ? (state.currentPage / (state.totalPages - 1)) * 100 : 0;
-  $('#progress-fill').style.width = pct + '%';
+  const chFrac = state.totalPages > 1 ? state.currentPage / (state.totalPages - 1) : 0;
+  const chPct = Math.round(chFrac * 100);
+  $('#progress-fill').style.width = chPct + '%';
 
-  const pageStr = `Page ${state.currentPage + 1} of ${state.totalPages}`;
-  const chPct = state.totalPages > 1 ? Math.round(pct) : 0;
-  const chWords = state.chapterWords ? ` · Ch: ${formatWords(state.chapterWords)} words (${chPct}%)` : '';
-  const bookWords = state.bookWords ? ` · Book: ${formatWords(state.bookWords)} words` : '';
-  $('#page-info').textContent = pageStr + chWords + bookWords;
+  const chRead = Math.round(state.chapterWords * chFrac);
+  const bookRead = state.wordsBeforeChapter + chRead;
+  const bookPct = state.bookWords > 0 ? Math.round((bookRead / state.bookWords) * 100) : 0;
+
+  const parts = [`Page ${state.currentPage + 1} of ${state.totalPages}`];
+  if (state.chapterWords) {
+    parts.push(`Ch: ${fmt(chRead)} / ${fmt(state.chapterWords)} words (${chPct}%)`);
+  }
+  if (state.bookWords) {
+    parts.push(`Book: ${fmt(bookRead)} / ${fmt(state.bookWords)} words (${bookPct}%)`);
+  }
+  $('#page-info').textContent = parts.join(' · ');
 }
 
 // --- Footnote Popovers ---

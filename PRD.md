@@ -160,7 +160,7 @@ Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + 
 
 ### Current features
 
-- **Two-column paginated reading** (CSS multi-column layout with translateX page turns)
+- **Two-column paginated reading** (CSS multi-column layout with scrollLeft page turns)
 - **Library view** — browse all books/chapters from `library.json`
 - **Chapter navigation** — collapsible sidebar TOC
 - **Themes** — light/dark/sepia (CSS custom properties)
@@ -194,10 +194,60 @@ python -m http.server 8000       # serve from project root
 | Component | Choice |
 |---|---|
 | Markdown→HTML | markdown-it + markdown-it-footnote (CDN) |
-| Pagination | CSS multi-column layout + translateX |
+| Pagination | CSS multi-column layout + scrollLeft |
 | Framework | Vanilla JS (~450 lines) |
 | Themes | CSS custom properties |
 | Serving | `python -m http.server` |
+
+### Column bleed: diagnosis and solution
+
+The two-column paginated reader suffered from text from adjacent pages bleeding into the visible area. This section documents the problem, failed approaches, and the working solution.
+
+#### The problem
+
+With CSS multi-column layout, content flows into columns that extend horizontally. To show one "page" (2 columns), the reader must shift the content and clip everything outside the visible area. Text from the next or previous page's columns bled into view, getting worse on later pages due to cumulative alignment drift.
+
+#### Root cause
+
+The browser places columns at intervals of `(actualColWidth + columnGap)`. With `column-count: 2`, the browser auto-calculates `actualColWidth` — and `2 * (actualColWidth + gap)` does **not** equal the container width. For example, at 1512px viewport: container is 1416px, but the actual two-column span is 1464px (2 × 732). Every page turn undershoots or overshoots by 48px (one gap width), accumulating across pages.
+
+Key insight: **you cannot calculate the column step from container dimensions alone** — you must measure the actual rendered column positions from the DOM.
+
+#### Failed approaches
+
+1. **`translateX` + `overflow: hidden`** — `overflow: hidden` clips at the border/padding edge, not the content edge. Translated content that extends past the left edge of the container remains visible within the padding area. Sub-pixel rendering also causes bleed at the right edge.
+
+2. **`clip-path: inset(0)`** — clips to the same boundary as `overflow: hidden`. Does not help.
+
+3. **Computing `pageStep` from container width** — `pageStep = contentWidth` drifts because the browser's actual column step differs from `contentWidth / 2`. Using `column-width` CSS property (instead of `column-count`) also fails because `column-width` is a minimum suggestion — the browser may create more or fewer columns, especially on Retina displays.
+
+4. **Reducing column width by 1px** — reduces the bleed but doesn't eliminate it, and the drift still accumulates.
+
+5. **Headless vs headed browser differences** — headless Chromium and headed Chrome render columns differently. The bug only appeared in headed Chrome with Retina (2x) device scale. Always test pagination in headed Chrome at production resolution.
+
+#### Working solution
+
+Three elements combined:
+
+1. **`scrollLeft` instead of `translateX`** — the browser's native scroll clipping is pixel-perfect. `inner.scrollLeft = offset` clips content exactly at the scroll boundary, unlike `translateX` which shifts content within the element's box and relies on `overflow: hidden` to clip.
+
+2. **Measure actual column step from DOM** — `_measureColumnStep()` finds the first block elements' x-positions relative to the content container, computes the step between consecutive column starts. This gives the browser's actual column width + gap, not a calculated estimate.
+
+3. **Set inner container width to `pageStep`** — `inner.style.width = pageStep + 'px'` ensures `overflow: hidden` clips exactly at the column boundary. Since `pageStep = 2 * actualColStep` and the inner container is that exact width, no partial third column can ever be visible.
+
+#### Code pattern
+
+```js
+// Measure actual column step from rendered DOM
+const actualColStep = _measureColumnStep(container);
+state.pageStep = actualColStep * COLUMNS;
+
+// Set inner width to match so overflow clips at column boundary
+inner.style.width = state.pageStep + 'px';
+
+// Navigate via scrollLeft (not translateX)
+inner.scrollLeft = currentPage * state.pageStep;
+```
 
 ### Design references
 
