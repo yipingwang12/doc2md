@@ -239,8 +239,11 @@ function renderSidebar() {
 
 function toggleSidebar() {
   state.sidebarVisible = !state.sidebarVisible;
-  $('#sidebar').classList.toggle('hidden', !state.sidebarVisible);
-  requestAnimationFrame(() => recalcPages());
+  const sidebar = $('#sidebar');
+  sidebar.classList.toggle('hidden', !state.sidebarVisible);
+  // Recalculate after the sidebar's margin-left transition completes
+  // so getContentDimensions measures the final width.
+  sidebar.addEventListener('transitionend', () => recalcPages(), { once: true });
 }
 
 // --- Rendering ---
@@ -274,20 +277,16 @@ function recalcPages() {
   container.style.columnWidth = 'auto';
   container.style.transform = 'none';
 
-  // Measure total scrollable width
+  // Reset scroll position and force reflow before measuring
   inner.scrollLeft = 0;
   void container.offsetHeight;
 
-  // Measure the actual column step from the browser's rendered layout.
-  // column-count:2 makes the browser choose a column width, and each column
-  // occupies (actualColWidth + gap). We need to step by exactly 2 of those.
-  const actualColStep = _measureColumnStep(container);
-  state.pageStep = actualColStep * COLUMNS;
+  // With column-count:2, the browser creates columns where
+  // 2 * colWidth + gap = containerWidth (exact fit). The page step
+  // to advance past 2 columns + the inter-page gap is containerWidth + gap.
+  state.pageStep = contentWidth + COLUMN_GAP;
 
-  // Set inner width to match pageStep exactly so overflow clips at column boundary
-  inner.style.width = state.pageStep + 'px';
-
-  state.totalPages = Math.max(1, Math.round(container.scrollWidth / state.pageStep));
+  state.totalPages = Math.max(1, Math.ceil(container.scrollWidth / state.pageStep));
 
   if (state.currentPage >= state.totalPages) {
     state.currentPage = state.totalPages - 1;
@@ -297,27 +296,6 @@ function recalcPages() {
   updateProgress();
 }
 
-function _measureColumnStep(container) {
-  // Find the actual column width by measuring where block elements start.
-  // The browser chooses column widths that may not match our calculations.
-  const els = container.querySelectorAll('p, h1, h2, h3, blockquote, li');
-  const xSet = new Set();
-  const baseX = container.getBoundingClientRect().left;
-  for (const el of els) {
-    xSet.add(Math.round(el.getBoundingClientRect().left - baseX));
-    if (xSet.size >= 4) break;  // only need a few to find the step
-  }
-  const positions = [...xSet].sort((a, b) => a - b);
-  // Find the first positive step between column starts
-  for (let i = 1; i < positions.length; i++) {
-    const step = positions[i] - positions[i - 1];
-    if (step > 100) return step;  // must be a real column gap, not padding
-  }
-  // Fallback: assume contentWidth / COLUMNS + gap
-  const style = window.getComputedStyle(container);
-  const gap = parseFloat(style.columnGap) || 0;
-  return (container.clientWidth + gap) / COLUMNS;
-}
 
 function applyPageTransform(animate = true) {
   const inner = $('.reading-pane-inner');

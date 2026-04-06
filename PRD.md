@@ -209,9 +209,9 @@ With CSS multi-column layout, content flows into columns that extend horizontall
 
 #### Root cause
 
-The browser places columns at intervals of `(actualColWidth + columnGap)`. With `column-count: 2`, the browser auto-calculates `actualColWidth` — and `2 * (actualColWidth + gap)` does **not** equal the container width. For example, at 1512px viewport: container is 1416px, but the actual two-column span is 1464px (2 × 732). Every page turn undershoots or overshoots by 48px (one gap width), accumulating across pages.
+With `column-count: 2` and gap `G`, the browser creates columns of width `(W - G) / 2` within container width `W`. Two columns plus one gap fill the container exactly: `2 * colWidth + G = W`. But the page step — the distance between consecutive page starts — is `W + G`, not `W`. The extra `G` is the inter-page gap between the last column of one page and the first column of the next.
 
-Key insight: **you cannot calculate the column step from container dimensions alone** — you must measure the actual rendered column positions from the DOM.
+The original code used `pageStep = contentWidth` (missing `+ gap`), causing 48px undershoot per page turn, accumulating across pages. A subsequent fix attempt introduced DOM measurement of column positions (`_measureColumnStep()`) and set the inner container width to the measured `pageStep`. This created a circular dependency: setting the width changed the column layout, invalidating the measurement. Example at 1512px viewport: natural container width 1416px → measured colStep 732 → set inner width to 1464 → browser recalculates colWidth to 708 → actual colStep becomes 756 → 48px drift per page.
 
 #### Failed approaches
 
@@ -219,41 +219,86 @@ Key insight: **you cannot calculate the column step from container dimensions al
 
 2. **`clip-path: inset(0)`** — clips to the same boundary as `overflow: hidden`. Does not help.
 
-3. **Computing `pageStep` from container width** — `pageStep = contentWidth` drifts because the browser's actual column step differs from `contentWidth / 2`. Using `column-width` CSS property (instead of `column-count`) also fails because `column-width` is a minimum suggestion — the browser may create more or fewer columns, especially on Retina displays.
+3. **`pageStep = contentWidth`** — missing `+ gap`. Drifts by one gap width (48px) per page turn.
 
-4. **Reducing column width by 1px** — reduces the bleed but doesn't eliminate it, and the drift still accumulates.
+4. **Reducing column width by 1px** — reduces but doesn't eliminate; drift still accumulates.
 
-5. **Headless vs headed browser differences** — headless Chromium and headed Chrome render columns differently. The bug only appeared in headed Chrome with Retina (2x) device scale. Always test pagination in headed Chrome at production resolution.
+5. **DOM measurement + inner width override** — `_measureColumnStep()` measured actual column positions, then set `inner.style.width = pageStep`. The width change triggers a reflow that changes column widths, invalidating the measurement. Same 48px drift, different cause.
+
+6. **Sidebar recalc via `requestAnimationFrame`** — sidebar slides in/out via CSS `margin-left` transition (0.25s). `recalcPages()` in a `requestAnimationFrame` fires before the transition completes, measuring the old width.
 
 #### Working solution
 
-Three elements combined:
+1. **`scrollLeft` instead of `translateX`** — browser's native scroll clipping is pixel-perfect. `inner.scrollLeft = offset` clips exactly at the scroll boundary.
 
-1. **`scrollLeft` instead of `translateX`** — the browser's native scroll clipping is pixel-perfect. `inner.scrollLeft = offset` clips content exactly at the scroll boundary, unlike `translateX` which shifts content within the element's box and relies on `overflow: hidden` to clip.
+2. **`pageStep = contentWidth + COLUMN_GAP`** — correct arithmetic. No DOM measurement, no container width override, no circular dependency. With `column-count: 2`, the browser fills the container exactly, so no partial third column can ever be visible.
 
-2. **Measure actual column step from DOM** — `_measureColumnStep()` finds the first block elements' x-positions relative to the content container, computes the step between consecutive column starts. This gives the browser's actual column width + gap, not a calculated estimate.
+3. **`clip-path: inset(0 1px 0 0)`** — 1px right-edge safety margin for sub-pixel Retina rounding.
 
-3. **Set inner container width to `pageStep`** — `inner.style.width = pageStep + 'px'` ensures `overflow: hidden` clips exactly at the column boundary. Since `pageStep = 2 * actualColStep` and the inner container is that exact width, no partial third column can ever be visible.
+4. **Sidebar: `transitionend` listener** — `recalcPages()` fires only after the sidebar's CSS transition completes, ensuring the width measurement reflects the final layout.
 
 #### Code pattern
 
 ```js
-// Measure actual column step from rendered DOM
-const actualColStep = _measureColumnStep(container);
-state.pageStep = actualColStep * COLUMNS;
-
-// Set inner width to match so overflow clips at column boundary
-inner.style.width = state.pageStep + 'px';
+// pageStep = container width + inter-page gap. No measurement needed.
+state.pageStep = contentWidth + COLUMN_GAP;
 
 // Navigate via scrollLeft (not translateX)
 inner.scrollLeft = currentPage * state.pageStep;
 ```
+
+#### Testing
+
+Playwright visual tests (`screenshots/test_bleed.py`) verify column alignment across pages 1–15, with and without sidebar, at 1512×900 Retina (2x). Use instant scroll (`scrollBehavior: 'auto'`) for accurate screenshots — smooth scroll animation causes false positives.
 
 ### Design references
 
 - [Libby architecture](https://rakuten.today/tech-innovation/meet-libby-overdrives-new-ereading-app.html) — augmented hybrid app, CSS column pagination
 - [epub.js](https://github.com/futurepress/epub.js/) — CSS column pagination reference
 - [CSS Multi-Column Book Layout](https://www.w3tutorials.net/blog/css-multi-column-multi-page-layout-like-an-open-book/)
+
+## TODO: Index Linking
+
+### Current state
+
+- 7 index chapters exist in output (one per Cambridge Science volume)
+- Index entries are classified as `body` blocks — the `index` block type is defined in `TextBlock` and handled in `markdown_writer.py` but never assigned by the segmenter
+- Entries are plain text with source PDF page numbers (e.g., `"Abbe, Ernst 246"`); no links to main text
+- Index hierarchies (sub-entries, "see also" cross-refs) are flattened
+
+### Matching strategy: page-guided text search
+
+Both the page number and the term are available during pipeline execution. Used together they are much stronger than either alone.
+
+1. **Build page_number → chapter/section map** from `Page.page_number` + `TextBlock.page_index` + chapter assignment
+2. **Parse index entries** into structured `(term, [page_numbers])` pairs; handle sub-entries, page ranges (`280–291`), and cross-refs (`see also X`)
+3. **For each (term, page_number)**: look up which chapter contains that page, search for the term verbatim in that chapter's text
+4. **Only emit a link when the term actually appears** near the indicated page (±1 page for digital PDFs, ±2 for OCR); skip otherwise
+
+### Screenshot / OCR books
+
+Same strategy applies, with two adjustments:
+
+- **Fuzzy text matching** — OCR errors break verbatim search. Normalize unicode, collapse whitespace, use similarity threshold. Switch exact vs fuzzy based on `Page.extraction_method` (`pymupdf` vs `surya`)
+- **Wider page window** — `Page.page_number` is LLM-detected for screenshots, may be off. Use ±2 page search window; require stronger text match to compensate
+
+### Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| `Page.page_number` is None | Skip — no match without page mapping |
+| Common-word terms ("Russia", "war") | Page constraint narrows search; safe |
+| Multiple occurrences on same page | Link to section heading, not specific line |
+| Page ranges (280–291) | Search all pages in range; link to section containing start page |
+| OCR mangles term | Fuzzy match for OCR sources; skip if ambiguous |
+| Cross-references ("see also X") | Link to other index entries, not body text; or skip |
+
+### Implementation notes
+
+- Must run during pipeline execution (stage 7–8) when `Document.pages` and `Chapter.blocks` are both in memory
+- Segmenter needs rules to detect and classify index content as `index` block type
+- Markdown writer emits anchors at match sites and hyperlinks in the index chapter
+- Conservative: unmatched entries remain as plain text — no guessing
 
 ## Non-Goals (Current Scope)
 
