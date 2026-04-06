@@ -8,7 +8,7 @@ import pytest
 # Add reader/ to path so we can import build_library
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reader"))
 
-from build_library import build_library, extract_title, prettify_dir_name
+from build_library import build_library, count_body_words, extract_title, prettify_dir_name
 
 
 @pytest.fixture
@@ -52,6 +52,20 @@ def test_extract_title_h2_not_h1(tmp_path):
     md = tmp_path / "test.md"
     md.write_text("## This is H2\n\n# This is H1\n")
     assert extract_title(md) == "This is H1"
+
+
+def test_extract_title_numeric_h1_falls_back_to_h3(tmp_path):
+    """When # heading is just a number, use ### heading instead."""
+    md = tmp_path / "test.md"
+    md.write_text("# 2\n\n### THE LEGACY OF THE\n\"SCIENTIFIC REVOLUTION\"\n\n### Science\n")
+    assert extract_title(md) == 'THE LEGACY OF THE "SCIENTIFIC REVOLUTION"'
+
+
+def test_extract_title_multiline_h3(tmp_path):
+    """### heading with ALL-CAPS continuation line."""
+    md = tmp_path / "test.md"
+    md.write_text("# 15\n\n### MECHANICS AND\nEXPERIMENTAL PHYSICS\n\nbody text here\n")
+    assert extract_title(md) == "MECHANICS AND EXPERIMENTAL PHYSICS"
 
 
 def test_extract_title_missing_file(tmp_path):
@@ -119,3 +133,56 @@ def test_build_library_nonexistent_dir(tmp_path):
 def test_build_library_unknown_volume_uses_prettified_name(fake_results):
     lib = build_library(fake_results)
     assert lib["books"][0]["title"] == "Test Book V1"
+
+
+def test_build_library_multi_file_chapters(tmp_path):
+    """When a chapter dir has front_matter + content files, use content for title."""
+    results = tmp_path / "results"
+    book = results / "book"
+    ch = book / "010_pp_1_20_intro"
+    ch.mkdir(parents=True)
+    (ch / "chapter_01_front_matter.md").write_text("# Front Matter\n\nTitle page.\n")
+    (ch / "chapter_02_intro.md").write_text("# 1\n\n### INTRODUCTION\n\nbody text here.\n")
+
+    lib = build_library(results)
+    chapter = lib["books"][0]["chapters"][0]
+    assert chapter["title"] == "INTRODUCTION"
+    assert chapter["paths"] is not None
+    assert len(chapter["paths"]) == 2
+    assert chapter["words"] == count_body_words(ch / "chapter_01_front_matter.md") + \
+        count_body_words(ch / "chapter_02_intro.md")
+
+
+def test_build_library_deduplicates_section_dividers(tmp_path):
+    """Section divider PDFs with identical content are skipped."""
+    results = tmp_path / "results"
+    book = results / "book"
+    content = "# Part I\n\n### THE NEW NATURE\n\nBody text.\n"
+
+    divider = book / "030_the_new_nature"
+    divider.mkdir(parents=True)
+    (divider / "chapter_01_part_i.md").write_text(content)
+
+    actual = book / "031_pp_1_20_the_new_nature"
+    actual.mkdir(parents=True)
+    (actual / "chapter_01_part_i.md").write_text(content)
+
+    lib = build_library(results)
+    assert len(lib["books"][0]["chapters"]) == 1
+
+
+def test_build_library_skips_frontmatter_dirs(tmp_path):
+    """Dirs with 'frontmatter' in name are skipped."""
+    results = tmp_path / "results"
+    book = results / "book"
+    fm = book / "010_pp_i_xxx_frontmatter"
+    fm.mkdir(parents=True)
+    (fm / "chapter_01_front_matter.md").write_text("# TOC\n")
+    ch = book / "020_pp_1_20_intro"
+    ch.mkdir(parents=True)
+    (ch / "chapter_01_intro.md").write_text("# Introduction\n\nBody.\n")
+
+    lib = build_library(results)
+    ids = [c["id"] for c in lib["books"][0]["chapters"]]
+    assert "010_pp_i_xxx_frontmatter" not in ids
+    assert "020_pp_1_20_intro" in ids

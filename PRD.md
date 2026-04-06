@@ -23,12 +23,13 @@ Academic PDFs and book screenshots (e.g. from Libby/library apps) are trapped in
 |---|-------|--------|-------------|
 | 1 | **Ingest** | `ingest/rclone_sync`, `ingest/file_scanner` | Sync from Google Drive; discover PDFs and screenshot folders in local dirs |
 | 2 | **Extract** | `extract/detect`, `extract/pdf_extract`, `extract/ocr_extract` | Auto-detect digital vs scanned PDF; extract text + block dicts via PyMuPDF or Surya OCR |
-| 3 | **Clean** | `assembly/cleaner` | Normalize ligatures; strip repeated headers/footers, page numbers, and URL boilerplate |
+| 3 | **Clean** | `assembly/cleaner` | Normalize ligatures and PDF control char encoding (PUA, ayin/alef); strip repeated headers/footers, page numbers, and URL boilerplate |
 | 4 | **Order** | `ordering/dedup`, `ordering/reorder` | Deduplicate pages (hash → fuzzy → LLM fallback); detect page numbers via LLM; reorder; warn on gaps (screenshots only) |
 | 5 | **Classify** | `analysis/segmenter`, `analysis/classifier` | Rule-based segmentation using PyMuPDF block structure and font metadata (size, name); falls back to raw text heuristics for OCR pages. Splits merged footnote blocks at superscript boundaries |
 | 6 | **Structure** | `analysis/chapter_detector` | Rule-based chapter detection from heading levels; LLM fallback only when rules are ambiguous. Merges consecutive heading-only blocks into combined titles |
 | 7 | **Assemble** | `assembly/footnotes`, `assembly/citations`, `assembly/merger` | Link footnotes (merging orphan continuations); extract bibliography; then merge body blocks across page breaks with hyphenation fix and sentence joining |
 | 8 | **Output** | `output/markdown_writer` | Render each chapter to a separate `.md` file with footnotes section and numbered bibliography |
+| 9 | **Index** | `assembly/index_linker` | Post-processing: parse index entries, match to chapters by page range, rewrite index with hyperlinks (via `link-index` CLI) |
 
 ## Data Model
 
@@ -52,6 +53,7 @@ Commands:
               --force
   status    Show cache status (files and completed stages)
   clean     Clear cache for reprocessing
+  link-index <volume_dir>  Link index entries to chapter files
 ```
 
 ## Configuration (`config.toml`)
@@ -134,7 +136,7 @@ Each chapter file contains:
 
 ## Quality
 
-- 269+ tests, ~91% coverage
+- 354+ tests, ~91% coverage
 - Every module has a corresponding test file
 - Comprehensive integration tests covering real-world academic PDF patterns
 - Dev deps: pytest, pytest-cov, responses (HTTP mocking), playwright (e2e)
@@ -143,14 +145,15 @@ Each chapter file contains:
 
 - *The Cambridge History of Science* (8 volumes, 342 PDFs, 2.97M words) — 80s total, zero failures
 - *A History of Boston in 50 Artifacts* (209 Libby screenshots, 51.6k words) — 23 min OCR processing
-- 9 books, 336 chapters, 2,831 section headings, 13,268 footnotes linked
+- 9 books, 299 chapters (deduped), 2,831 section headings, 13,268 footnotes linked, 18,761 index links
 
 ## Known Limitations
 
 - **Unsectioned chapters** — 14 files (mostly indexes, contributor lists, and continuous essays) have no section headings detected because the source PDFs genuinely lack them
 - **Bibliographic line wrapping** — ~10 cases where short abbreviations in footnote references (e.g. "Cod. med. gr.") remain as broken short lines; fixing risks breaking the 316 math/number cases now correctly preserved
 - **Page break gaps** — 19 sentences across 2.97M words have a blank line at a page boundary; fixing requires cross-page sentence analysis for negligible reader impact
-- **Duplicate source files** — zip downloads from Cambridge Core sometimes contain duplicate PDFs; these must be deduplicated manually or by file hash before processing
+- **Duplicate source files** — zip downloads from Cambridge Core sometimes contain duplicate PDFs; `build_library.py` deduplicates by SHA-256 content hash; section divider PDFs (Part titles) are filtered
+- **PDF control char encoding** — Cambridge UP PDFs encode Semitic transliteration characters (ayin ʿ, alef ʾ) as ASCII control codes U+0002/U+0003; cleaner maps these to Unicode modifier letters U+02BF/U+02BE
 
 ## E-Book Reader (Implemented)
 
@@ -169,7 +172,7 @@ Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + 
 - **Reading position persistence** — localStorage saves book/chapter/page
 - **Progress bar** — page count, chapter word count + percentage, book word count
 - **Keyboard navigation** — arrow keys, space, escape
-- **`build_library.py`** — scans results/ and generates library.json with word counts
+- **`build_library.py`** — scans results/ and generates library.json with word counts; deduplicates section dividers by content hash; skips metadata dirs; extracts titles from `###` headings with multiline continuation; supports multi-file chapters (front matter + content)
 
 ### Usage
 
@@ -257,48 +260,195 @@ Playwright visual tests (`screenshots/test_bleed.py`) verify column alignment ac
 - [epub.js](https://github.com/futurepress/epub.js/) — CSS column pagination reference
 - [CSS Multi-Column Book Layout](https://www.w3tutorials.net/blog/css-multi-column-multi-page-layout-like-an-open-book/)
 
-## TODO: Index Linking
+## Index Linking (Implemented)
 
-### Current state
+### Overview
 
-- 7 index chapters exist in output (one per Cambridge Science volume)
-- Index entries are classified as `body` blocks — the `index` block type is defined in `TextBlock` and handled in `markdown_writer.py` but never assigned by the segmenter
-- Entries are plain text with source PDF page numbers (e.g., `"Abbe, Ernst 246"`); no links to main text
-- Index hierarchies (sub-entries, "see also" cross-refs) are flattened
+Post-processing step that parses index chapters, matches entries to content chapters by page number, and rewrites the index with markdown hyperlinks. Implemented in `assembly/index_linker.py`, invoked via `doc2md link-index <volume_dir>`.
 
-### Matching strategy: page-guided text search
+### Architecture
 
-Both the page number and the term are available during pipeline execution. Used together they are much stronger than either alone.
+Runs as a **post-processing step on output files**, not inline in the pipeline. Reason: the pipeline processes one source PDF at a time, but index linking needs all chapters in a volume simultaneously. Reads `.md` files from the output directory, builds a page→chapter map from `NNN_pp_START_END_title` directory names.
 
-1. **Build page_number → chapter/section map** from `Page.page_number` + `TextBlock.page_index` + chapter assignment
-2. **Parse index entries** into structured `(term, [page_numbers])` pairs; handle sub-entries, page ranges (`280–291`), and cross-refs (`see also X`)
-3. **For each (term, page_number)**: look up which chapter contains that page, search for the term verbatim in that chapter's text
-4. **Only emit a link when the term actually appears** near the indicated page (±1 page for digital PDFs, ±2 for OCR); skip otherwise
+### How it works
 
-### Screenshot / OCR books
+1. **`build_chapter_map()`** — parses directory names for page ranges, loads chapter text, sorts by start page. Prefers narrowest range when section dividers overlap individual chapters.
+2. **`parse_index_md()`** — state-machine parser handles main entries, sub-entries (indented/following), `(cont.)` continuations, page ranges with abbreviated ends (`516–17` → 516–517), "See also" cross-refs (including targets on next line), wrapped lines, page-number headings (stripped)
+3. **`_term_variants()`** — generates search variants: reversed names ("Abelard, Peter" → "Peter Abelard", "Abelard"), preposition stripping ("medicine in Africa" → "medicine")
+4. **`_term_in_chapter()`** — case-insensitive substring search using all variants
+5. **`render_linked_index()`** — for each page ref, finds covering chapter; if term variant found in chapter text, renders as relative markdown link `[516](../dir/chapter.md)`; unmatched entries stay as plain text
 
-Same strategy applies, with two adjustments:
+### Idempotency
 
-- **Fuzzy text matching** — OCR errors break verbatim search. Normalize unicode, collapse whitespace, use similarity threshold. Switch exact vs fuzzy based on `Page.extraction_method` (`pymupdf` vs `surya`)
-- **Wider page window** — `Page.page_number` is LLM-detected for screenshots, may be off. Use ±2 page search window; require stronger text match to compensate
+Saves original index as `.orig.md` on first run. Subsequent runs always read from `.orig.md`, preventing corruption from re-parsing linked output.
 
-### Risks and mitigations
+### Results
 
-| Risk | Mitigation |
-|---|---|
-| `Page.page_number` is None | Skip — no match without page mapping |
-| Common-word terms ("Russia", "war") | Page constraint narrows search; safe |
-| Multiple occurrences on same page | Link to section heading, not specific line |
-| Page ranges (280–291) | Search all pages in range; link to section containing start page |
-| OCR mangles term | Fuzzy match for OCR sources; skip if ambiguous |
-| Cross-references ("see also X") | Link to other index entries, not body text; or skip |
+| Volume | Links | Link rate | Status |
+|---|---:|---:|---|
+| v2 Medieval | 3,043 | 72% | Clean |
+| v3 Early Modern | 2,136 | 82% | Clean |
+| v4 18th Century | 2,822 | 59% | 113 corrupt "See also" lines (semicolon format) |
+| v5 Modern Phys/Math | 3,271 | 88% | Clean |
+| v6 Modern Bio/Earth | 2,654 | 80% | Clean |
+| v7 Modern Social | 2,753 | 87% | Clean |
+| v8 National/Global | 2,082 | 80% | Clean |
+| **Total** | **18,761** | | **6 of 7 clean** |
 
-### Implementation notes
+V1 and Boston Artifacts skipped (no `_pp_N_N_` directory naming).
 
-- Must run during pipeline execution (stage 7–8) when `Document.pages` and `Chapter.blocks` are both in memory
-- Segmenter needs rules to detect and classify index content as `index` block type
-- Markdown writer emits anchors at match sites and hyperlinks in the index chapter
-- Conservative: unmatched entries remain as plain text — no guessing
+### Known issues
+
+1. **V4 semicolon-delimited format** — v4's index uses semicolons to separate sub-topics within flowing multi-line entries (e.g. `and chemistry, 379; establishment of, 88–9, 512; and navigation, 827`). The newline-based parser mishandles these, producing 113 corrupt "See also" lines. Needs a semicolon-aware sub-entry parser.
+
+2. **Years parsed as page numbers** — entries like `"French Revolution, 1789"` have the year extracted as a page ref. Affects v6/v7/v8 where max page < 900. Fix: filter refs exceeding the volume's max page number.
+
+3. **Unmatched generic sub-entries** — terms like "overview", "general discussion", "in optics" don't appear verbatim in chapter text (~20–30% of refs). These are correctly left as plain text by the conservative matching approach.
+
+4. **`index` block type unused** — the segmenter still classifies index content as `body` blocks. The `index` type in `TextBlock` is defined and handled by `markdown_writer.py` but never assigned. Orthogonal to linking — could be added as a post-chapter-detection reclassification step.
+
+## TODO: Cross-Volume Entity Search
+
+### Goal
+
+Search for a person, concept, or term across all processed volumes and extract surrounding paragraphs — even when subsequent sentences use pronouns or paraphrases instead of the original term.
+
+### Requirements
+
+- Query interface (CLI + reader UI) that searches all volumes' markdown output
+- Paragraph-level context extraction, not just matching lines
+- Coreference-aware: "Einstein" match should include following sentences that say "he" or "the physicist"
+- Results grouped by volume/chapter with source location
+
+### Approaches
+
+Five broad strategies, from simplest to most capable:
+
+#### 1. Sparse retrieval (keyword search)
+
+Inverted index + BM25 ranking. Tokenize documents, rank by term frequency. Fast, interpretable, no AI. Struggles with synonyms and paraphrases — "Einstein" won't match "the physicist".
+
+#### 2. Dense retrieval (embedding search)
+
+Bi-encoder models encode query and passages into dense vectors; retrieve by cosine similarity. Handles semantic similarity ("quantum physicist" matches Einstein passages even without his name). ColBERT v2 uses late interaction (token-level comparison) for better precision. Matryoshka embeddings allow variable dimensions for storage/quality tradeoff.
+
+#### 3. Named entity recognition + entity linking
+
+NER models identify entity mentions and classify them (person, place, org). Entity linking resolves mentions to a knowledge base (e.g. "Albert" on page 391 → Wikidata Q60093 = Albertus Magnus). Zero-shot NER (GLiNER) can find entities of any user-specified type without fine-tuning.
+
+#### 4. RAG (retrieval-augmented generation)
+
+Chunk documents into paragraphs, embed each chunk, index in a vector store, retrieve top-k for a query, pass to LLM for synthesis. Sidesteps the coreference problem — the LLM reads retrieved paragraphs and naturally understands that "he" refers to Einstein.
+
+#### 5. GraphRAG (graph-based retrieval)
+
+Extract entities and relations from text into a knowledge graph. Use community detection and graph structure to answer queries that span many documents. Microsoft GraphRAG (2024) builds the graph via LLM calls, then uses it for multi-document synthesis. RAPTOR recursively clusters and summarizes chunks into a tree for multi-level retrieval.
+
+### Coreference resolution
+
+The key sub-problem: linking "Einstein... he... the physicist... his theory" across sentences.
+
+- **Transformer coref models** — SpanBERT-based approaches predict which mentions refer to the same entity
+- **Autoregressive structured prediction** — Facebook's 2023 approach frames coref as seq2seq, near-human performance
+- **LLM-based coref** — prompt an LLM to resolve coreferences; works well for small contexts but expensive at scale
+
+### Candidate packages
+
+#### Dense retrieval / embedding search
+
+| Package | Install | Notes |
+|---|---|---|
+| sentence-transformers | `pip install sentence-transformers` | Best model ecosystem; models 100MB–1GB; fully local |
+| FAISS | `pip install faiss-cpu` | Meta's vector search; fast ANN; ~30MB; index-only (no embedding) |
+| ChromaDB | `pip install chromadb` | Embedded vector DB with auto-embedding; SQLite-backed; turnkey |
+| LanceDB | `pip install lancedb` | Lighter alternative to Chroma; columnar format; zero server |
+| sqlite-vec | `pip install sqlite-vec` | SQLite extension for vectors; minimal footprint |
+
+#### Named entity recognition
+
+| Package | Install | Notes |
+|---|---|---|
+| GLiNER | `pip install gliner` | Zero-shot NER — pass custom entity types at inference; ~500MB model |
+| spaCy | `pip install spacy` | Fast, production-grade; fixed entity types unless trained |
+| gliner-spacy | `pip install gliner-spacy` | Wraps GLiNER into a spaCy pipeline |
+
+#### Coreference resolution
+
+| Package | Install | Notes |
+|---|---|---|
+| fastcoref | `pip install fastcoref` | Current best standalone; ~1GB model; `FCoref` (speed) or `LingMessCoref` (accuracy) |
+| maverick-coref | `pip install maverick-coref` | Newer (2024), strong benchmarks |
+| coreferee | `pip install coreferee` | spaCy plugin; lighter but less accurate |
+
+#### RAG frameworks (Ollama-compatible)
+
+| Package | Install | Notes |
+|---|---|---|
+| LlamaIndex | `pip install llama-index llama-index-llms-ollama` | First-class Ollama support; best indexing abstractions |
+| Haystack v2 | `pip install haystack-ai` | Clean 2024 rewrite; `OllamaGenerator` component |
+| txtai | `pip install txtai` | All-in-one: embeddings + RAG + workflows |
+
+#### GraphRAG
+
+| Package | Install | Notes |
+|---|---|---|
+| Microsoft GraphRAG | `pip install graphrag` | Most mature (20k+ stars); entity graph via LLM; heavy indexing compute |
+| nano-graphrag | `pip install nano-graphrag` | Lightweight reimplementation; simpler; easier to customize |
+| LightRAG | `pip install lightrag-hku` | 2024 paper; dual-level retrieval; simpler than MS GraphRAG |
+
+#### Knowledge graph extraction
+
+| Package | Install | Notes |
+|---|---|---|
+| REBEL | HuggingFace `Babelscape/rebel-large` | Single forward pass → (subj, rel, obj) triples; ~220 fixed relation types |
+| GLiNER + GLiREL | `pip install gliner glirel` | Zero-shot NER + relation extraction with custom types |
+| relik | `pip install relik` | State-of-the-art entity linking + relation extraction |
+
+#### Full-text search
+
+| Package | Install | Notes |
+|---|---|---|
+| sqlite-utils | `pip install sqlite-utils` | One-liner FTS5: `db["docs"].enable_fts(["body"])` |
+| tantivy-py | `pip install tantivy` | Rust-based full-text engine; very fast |
+
+### Proposed implementation plan
+
+Three-phase approach, each phase standalone and useful:
+
+#### Phase 1: Index-guided search (no new dependencies)
+
+Leverage the 18,761 existing index links as a pre-built entity-to-passage map. Build a CLI command (`doc2md search <term>`) that:
+
+1. Scans all linked index files for the search term
+2. Follows the markdown links to extract the referenced chapter paragraphs
+3. Groups results by volume/chapter
+4. Outputs matching passages with context
+
+This covers the "look up Albertus Magnus across all volumes" use case with zero additional dependencies — the index linking already solved the hard problem of knowing where entities are discussed.
+
+#### Phase 2: Full-text search (add `sqlite-utils`)
+
+Build a search index over all chapter markdown files:
+
+1. `doc2md build-search` chunks all chapters into paragraphs, indexes in SQLite FTS5
+2. `doc2md search <term>` queries FTS5 with BM25 ranking, returns paragraphs with context
+3. Combine with Phase 1: index-guided results first (high precision), FTS5 results second (high recall)
+4. Reader UI: add search bar that queries an API endpoint or a pre-built JSON index
+
+Handles entities not in the book index, and finds mentions in volumes without indexes (v1, Boston Artifacts).
+
+#### Phase 3: Semantic search + coreference (add `sentence-transformers`, `faiss-cpu`, `fastcoref`)
+
+1. Embed all paragraphs with a local model (e.g. `all-MiniLM-L6-v2`, 80MB)
+2. Index in FAISS for sub-second similarity search
+3. Run `fastcoref` on retrieved paragraphs to expand matches to coreferent mentions
+4. Optionally pass retrieved + coref-expanded passages through Ollama for synthesis
+
+This handles the "he/the physicist" problem and semantic queries ("who contributed to medieval alchemy?").
+
+#### Why not GraphRAG first
+
+GraphRAG (Phase 4, if needed) requires LLM calls for every chunk during indexing — expensive even with Ollama on a 3M-word corpus. The three-phase plan above gets 90% of the value with minimal compute. GraphRAG would add value for complex multi-hop queries ("how did Islamic astronomy influence European cosmology through translation?") but can wait until the simpler phases prove insufficient.
 
 ## Non-Goals (Current Scope)
 

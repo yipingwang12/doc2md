@@ -186,10 +186,13 @@ async function openChapter(bookId, chapterId) {
   $('#reader-content').innerHTML = '<div class="loading">Loading...</div>';
 
   try {
-    const resp = await fetch(BASE + chapter.path);
-    if (!resp.ok) throw new Error('Failed to load chapter');
-    const text = await resp.text();
-    renderChapter(text);
+    const paths = chapter.paths || [chapter.path];
+    const parts = await Promise.all(paths.map(async p => {
+      const resp = await fetch(BASE + p);
+      if (!resp.ok) throw new Error('Failed to load chapter');
+      return resp.text();
+    }));
+    renderChapter(parts.join('\n\n'));
 
     const book = findBook(bookId);
     $('#book-title-text').textContent = book?.title || '';

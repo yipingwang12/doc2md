@@ -87,6 +87,18 @@ class TestNormalizeLigatures:
         text = "\uF731"
         assert normalize_ligatures(text) == "1"
 
+    def test_control_char_ayin(self):
+        """U+0002 (STX) → ʿ (ayin) in Semitic transliteration."""
+        assert normalize_ligatures("Sa\x02adya") == "Saʿadya"
+
+    def test_control_char_alef(self):
+        """U+0003 (ETX) → ʾ (alef) in Semitic transliteration."""
+        assert normalize_ligatures("Shmu\x03el") == "Shmuʾel"
+
+    def test_control_chars_mixed_with_ligatures(self):
+        """Control chars and ligatures in same text."""
+        assert normalize_ligatures("ﬁnd Sa\x02adya") == "find Saʿadya"
+
     def test_no_pua_unchanged(self):
         assert normalize_ligatures("normal text 123") == "normal text 123"
 

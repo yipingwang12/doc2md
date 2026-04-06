@@ -86,3 +86,15 @@ def clean(ctx):
     cache = Cache(config.paths.cache_dir)
     cache.clear()
     click.echo("Cache cleared.")
+
+
+@main.command(name="link-index")
+@click.argument("volume_dir", type=click.Path(exists=True))
+def link_index_cmd(volume_dir):
+    """Link index entries to chapter files in a volume's output directory."""
+    from doc2md.assembly.index_linker import link_index
+    result = link_index(Path(volume_dir))
+    if result:
+        click.echo(f"Index linked: {result}")
+    else:
+        click.echo("No index chapter found or no chapters with page ranges.")

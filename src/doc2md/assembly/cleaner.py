@@ -9,6 +9,13 @@ from doc2md.models import Page
 
 LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl", "ﬆ": "st"}
 
+# PDF font encoding maps Semitic transliteration characters (ayin ʿ, alef ʾ)
+# to ASCII control codes. Common in Cambridge UP Arabic/Hebrew scholarship PDFs.
+_CONTROL_CHAR_MAP = {
+    "\x02": "\u02BF",  # STX → ʿ (modifier letter left half ring / ayin)
+    "\x03": "\u02BE",  # ETX → ʾ (modifier letter right half ring / alef)
+}
+
 # PDF Private Use Area font encoding: U+F7XX → chr(0xXX).
 # Common in PDFs using decorative fonts (e.g. AGaramond-Titling) that remap
 # standard ASCII characters to PUA codepoints. PyMuPDF extracts these as raw
@@ -25,6 +32,8 @@ def normalize_ligatures(text: str) -> str:
     for lig, replacement in LIGATURES.items():
         text = text.replace(lig, replacement)
     text = _PUA_RE.sub(_replace_pua, text)
+    for ctrl, replacement in _CONTROL_CHAR_MAP.items():
+        text = text.replace(ctrl, replacement)
     return text
 
 

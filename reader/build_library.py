@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scan results/ directories and generate library.json for the reader."""
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -24,18 +25,52 @@ SKIP_DIRS = {
     "illustrations", "index", "notes_on_contributors",
 }
 
+# Substrings in directory names that indicate non-content (metadata) chapters
+_SKIP_SUBSTRINGS = [
+    "frontmatter", "copyright", "contents", "illustrations",
+    "notes_on_contributors", "general_editors_preface", "acknowledgments",
+]
+
+
 
 def extract_title(md_path: Path) -> str | None:
-    """Extract the first # heading from a markdown file."""
+    """Extract chapter title from a markdown file.
+
+    Uses the first # heading unless it's just a number (e.g. "# 2"),
+    in which case falls back to the first ### heading (the descriptive title
+    in Cambridge UP PDFs). Joins continuation lines that follow a heading
+    (e.g. "### THE LEGACY OF THE\\n\\"SCIENTIFIC REVOLUTION\\"").
+    """
     try:
         with open(md_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("# ") and not line.startswith("## "):
-                    return line[2:].strip()
+            lines = f.readlines()
     except (OSError, UnicodeDecodeError):
         return None
-    return None
+    h1 = None
+    first_sub = None
+    first_sub_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("## ") and h1 is None:
+            h1 = stripped[2:].strip()
+        elif stripped.startswith("### ") and first_sub is None:
+            first_sub = stripped[4:].strip()
+            first_sub_idx = i
+    # Join continuation lines after ### heading (all-caps non-blank, non-heading)
+    if first_sub is not None and first_sub_idx is not None:
+        for line in lines[first_sub_idx + 1:]:
+            cont = line.strip()
+            if not cont or cont.startswith("#"):
+                break
+            if cont == cont.upper() or cont.startswith('"'):
+                first_sub += " " + cont
+            else:
+                break
+    if h1 and not re.match(r"^\d+$", h1):
+        return h1
+    if first_sub:
+        return first_sub
+    return h1
 
 
 def count_body_words(md_path: Path) -> int:
@@ -74,6 +109,7 @@ def build_library(results_dir: Path = DEFAULT_RESULTS_DIR) -> dict:
         book_id = volume_dir.name
         book_title = VOLUME_TITLES.get(book_id, prettify_dir_name(book_id))
         chapters = []
+        seen_hashes: set[str] = set()
 
         for chapter_dir in sorted(volume_dir.iterdir()):
             if not chapter_dir.is_dir() or chapter_dir.name.startswith("."):
@@ -81,24 +117,37 @@ def build_library(results_dir: Path = DEFAULT_RESULTS_DIR) -> dict:
 
             if chapter_dir.name in SKIP_DIRS:
                 continue
+            if any(s in chapter_dir.name for s in _SKIP_SUBSTRINGS):
+                continue
 
             md_files = sorted(chapter_dir.glob("chapter_*.md"))
             if not md_files:
                 continue
 
-            md_file = md_files[0]
-            title = extract_title(md_file)
+            # Skip section divider PDFs that duplicate actual chapter content
+            content = b"".join(f.read_bytes() for f in md_files)
+            h = hashlib.sha256(content).hexdigest()
+            if h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+
+            # When chapter detector splits a title page into
+            # chapter_01_front_matter.md, get title from the content file
+            # (chapter_02+) but include all files for reading.
+            title_file = md_files[-1] if len(md_files) > 1 else md_files[0]
+            title = extract_title(title_file)
 
             if not title:
                 title = prettify_dir_name(chapter_dir.name)
 
-            rel_path = md_file.relative_to(results_dir.parent)
+            rel_paths = [str(f.relative_to(results_dir.parent)) for f in md_files]
 
-            words = count_body_words(md_file)
+            words = sum(count_body_words(f) for f in md_files)
             chapters.append({
                 "id": chapter_dir.name,
                 "title": title,
-                "path": str(rel_path),
+                "path": rel_paths[0],
+                "paths": rel_paths if len(rel_paths) > 1 else None,
                 "words": words,
             })
 
