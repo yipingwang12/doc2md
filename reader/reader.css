@@ -120,6 +120,13 @@ body {
   flex-shrink: 0;
 }
 
+.topbar-separator {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--border);
+  margin: 0 0.15rem;
+}
+
 .topbar .book-title {
   font-size: 0.9rem;
   font-weight: 600;
@@ -304,6 +311,138 @@ body {
   clip-path: inset(0 1px 0 0); /* 1px right-edge safety for sub-pixel Retina rounding */
 }
 
+/* === Scroll Mode === */
+
+.reader-view.scroll-mode .reading-pane-inner {
+  overflow-y: auto;
+  clip-path: none;
+}
+
+.reader-view.scroll-mode .reader-content {
+  column-count: 1 !important;
+  column-width: auto !important;
+  height: auto !important;
+  max-width: 42rem;
+  margin: 0 auto;
+}
+
+.reader-view.scroll-mode .page-turn-zone {
+  display: none;
+}
+
+/* === Playback (text reveal) === */
+
+:root {
+  --word-fade-duration: 800ms;
+}
+
+.reader-content .word {
+  transition: opacity var(--word-fade-duration) ease-in;
+}
+
+body.playback-active .reader-content .word {
+  opacity: 0;
+}
+
+body.playback-active .reader-content .word.revealed {
+  opacity: 1;
+}
+
+/* Highlight the play button when active */
+body.playback-active #btn-play {
+  background: var(--progress-fill);
+  color: var(--bg);
+}
+
+/* === Speed Menu === */
+
+.speed-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+#btn-speed {
+  min-width: 2.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-menu {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  background: var(--popover-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px var(--popover-shadow);
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  z-index: 200;
+  min-width: 5rem;
+}
+
+.speed-menu[hidden] {
+  display: none;
+}
+
+.speed-option {
+  background: none;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-option:hover {
+  background: var(--surface-hover);
+}
+
+.speed-option.active {
+  background: var(--progress-fill);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.speed-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.25rem 0.15rem;
+}
+
+.speed-toggle {
+  background: none;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.speed-toggle:hover {
+  background: var(--surface-hover);
+}
+
+.speed-toggle::before {
+  content: '\2610';
+  display: inline-block;
+  width: 1.2em;
+  margin-right: 0.15rem;
+}
+
+.speed-toggle.active::before {
+  content: '\2611';
+}
+
 .reader-content {
   column-fill: auto;
   /* height, column-width, column-gap set by JS */
@@ -428,6 +567,22 @@ body {
   background: var(--progress-bg);
   border-radius: 2px;
   margin: 0 1rem;
+  cursor: pointer;
+  position: relative;
+}
+
+/* Expand click target vertically without changing visual height */
+.progress-track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  bottom: -10px;
+}
+
+.progress-track:hover {
+  background: var(--surface-hover);
 }
 
 .progress-fill {

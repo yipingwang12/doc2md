@@ -25,6 +25,10 @@ const state = {
   chapterWords: 0,
   bookWords: 0,
   wordsBeforeChapter: 0,
+  mode: 'page',         // 'page' or 'scroll'
+  scrollFraction: 0,    // 0..1, scroll position for scroll mode
+  playbackSpeed: 1,     // 0.5..4
+  fadeEnabled: true,    // word fade transition on/off
 };
 
 // --- Markdown Setup ---
@@ -51,6 +55,10 @@ function loadPrefs() {
     state.currentBook = saved.currentBook ?? null;
     state.currentChapter = saved.currentChapter ?? null;
     state.currentPage = saved.currentPage ?? 0;
+    state.mode = saved.mode ?? 'page';
+    state.scrollFraction = saved.scrollFraction ?? 0;
+    state.playbackSpeed = saved.playbackSpeed ?? 1;
+    state.fadeEnabled = saved.fadeEnabled ?? true;
   } catch { /* ignore */ }
 }
 
@@ -61,6 +69,10 @@ function savePrefs() {
     currentBook: state.currentBook,
     currentChapter: state.currentChapter,
     currentPage: state.currentPage,
+    mode: state.mode,
+    scrollFraction: state.scrollFraction,
+    playbackSpeed: state.playbackSpeed,
+    fadeEnabled: state.fadeEnabled,
   }));
 }
 
@@ -91,7 +103,12 @@ function applyFontSize(size) {
   document.documentElement.style.setProperty('--font-size', state.fontSize + 'px');
   savePrefs();
   if (state.currentChapter) {
-    requestAnimationFrame(() => recalcPages());
+    requestAnimationFrame(() => {
+      recalcPages();
+      if (state.mode === 'scroll') {
+        applyScrollPosition(state.scrollFraction);
+      }
+    });
   }
 }
 
@@ -208,10 +225,14 @@ async function openChapter(bookId, chapterId) {
       }
     }
 
-    // Restore page position if returning to same chapter
+    // Restore position if returning to same chapter
     requestAnimationFrame(() => {
       recalcPages();
-      goToPage(state.currentPage);
+      if (state.mode === 'scroll') {
+        applyScrollPosition(state.scrollFraction);
+      } else {
+        goToPage(state.currentPage);
+      }
       savePrefs();
     });
   } catch (err) {
@@ -234,6 +255,7 @@ function renderSidebar() {
     item.textContent = ch.title;
     item.addEventListener('click', () => {
       state.currentPage = 0;
+      state.scrollFraction = 0;
       openChapter(state.currentBook, ch.id);
     });
     toc.appendChild(item);
@@ -252,6 +274,15 @@ function toggleSidebar() {
 // --- Rendering ---
 
 function renderChapter(markdownText) {
+  // New content invalidates any in-progress playback
+  if (playback.active) {
+    pausePlayback();
+    playback.words = [];
+    playback.index = 0;
+    playback.active = false;
+    document.body.classList.remove('playback-active');
+    updatePlaybackButtons();
+  }
   const html = md.render(markdownText);
   const container = $('#reader-content');
   container.innerHTML = html;
@@ -271,9 +302,21 @@ const COLUMN_GAP = 48;
 
 function recalcPages() {
   const container = $('#reader-content');
-  const { contentWidth, contentHeight } = getContentDimensions();
-
   const inner = $('.reading-pane-inner');
+
+  if (state.mode === 'scroll') {
+    // Clear any column layout artifacts from previous page mode
+    container.style.height = '';
+    container.style.columnCount = '';
+    container.style.columnGap = '';
+    container.style.columnWidth = '';
+    container.style.transform = '';
+    inner.scrollLeft = 0;
+    updateProgress();
+    return;
+  }
+
+  const { contentWidth, contentHeight } = getContentDimensions();
   container.style.height = contentHeight + 'px';
   container.style.columnCount = COLUMNS;
   container.style.columnGap = COLUMN_GAP + 'px';
@@ -282,6 +325,7 @@ function recalcPages() {
 
   // Reset scroll position and force reflow before measuring
   inner.scrollLeft = 0;
+  inner.scrollTop = 0;
   void container.offsetHeight;
 
   // With column-count:2, the browser creates columns where
@@ -331,12 +375,72 @@ function prevPage() {
   }
 }
 
+// --- Scroll Mode ---
+
+function applyScrollPosition(fraction) {
+  const inner = $('.reading-pane-inner');
+  const max = inner.scrollHeight - inner.clientHeight;
+  inner.scrollTop = Math.max(0, max * fraction);
+}
+
+function onScrollModeScroll() {
+  const inner = $('.reading-pane-inner');
+  const max = inner.scrollHeight - inner.clientHeight;
+  state.scrollFraction = max > 0 ? inner.scrollTop / max : 0;
+  updateProgress();
+  savePrefsThrottled();
+}
+
+let savePrefsTimer;
+function savePrefsThrottled() {
+  clearTimeout(savePrefsTimer);
+  savePrefsTimer = setTimeout(savePrefs, 250);
+}
+
+function toggleMode() {
+  // Column layout changes invalidate word positions; exit playback first
+  if (playback.active) exitPlayback();
+  state.mode = state.mode === 'page' ? 'scroll' : 'page';
+  $('.reader-view').classList.toggle('scroll-mode', state.mode === 'scroll');
+  updateModeButton();
+  savePrefs();
+  if (state.currentChapter) {
+    requestAnimationFrame(() => {
+      recalcPages();
+      if (state.mode === 'scroll') {
+        applyScrollPosition(state.scrollFraction);
+      } else {
+        goToPage(state.currentPage);
+      }
+    });
+  }
+}
+
+function updateModeButton() {
+  const btn = $('#btn-mode');
+  if (!btn) return;
+  // Show icon representing the mode to switch *to*:
+  // \u25A4 = square with horizontal fill (page), \u21C5 = up-down arrow (scroll)
+  btn.textContent = state.mode === 'scroll' ? '\u25A4' : '\u21C5';
+  btn.title = state.mode === 'scroll'
+    ? 'Switch to page mode'
+    : 'Switch to scroll mode';
+}
+
 function fmt(n) {
   return n.toLocaleString();
 }
 
 function updateProgress() {
-  const chFrac = state.totalPages > 1 ? state.currentPage / (state.totalPages - 1) : 0;
+  let chFrac;
+  let positionLabel;
+  if (state.mode === 'scroll') {
+    chFrac = state.scrollFraction;
+    positionLabel = `${Math.round(chFrac * 100)}% of chapter`;
+  } else {
+    chFrac = state.totalPages > 1 ? state.currentPage / (state.totalPages - 1) : 0;
+    positionLabel = `Page ${state.currentPage + 1} of ${state.totalPages}`;
+  }
   const chPct = Math.round(chFrac * 100);
   $('#progress-fill').style.width = chPct + '%';
 
@@ -344,7 +448,7 @@ function updateProgress() {
   const bookRead = state.wordsBeforeChapter + chRead;
   const bookPct = state.bookWords > 0 ? Math.round((bookRead / state.bookWords) * 100) : 0;
 
-  const parts = [`Page ${state.currentPage + 1} of ${state.totalPages}`];
+  const parts = [positionLabel];
   if (state.chapterWords) {
     parts.push(`Ch: ${fmt(chRead)} / ${fmt(state.chapterWords)} words (${chPct}%)`);
   }
@@ -352,6 +456,329 @@ function updateProgress() {
     parts.push(`Book: ${fmt(bookRead)} / ${fmt(state.bookWords)} words (${bookPct}%)`);
   }
   $('#page-info').textContent = parts.join(' · ');
+}
+
+// --- Playback (text reveal) ---
+
+const PLAYBACK_WPM = 220;
+const WORD_INTERVAL_MS = 60000 / PLAYBACK_WPM;
+const BASE_FADE_MS = 800;  // fade duration at 1x speed
+
+const playback = {
+  active: false,
+  playing: false,
+  words: [],
+  index: 0,
+  timer: null,
+  lastAdvanceTime: 0,
+};
+
+const ADVANCE_COOLDOWN_MS = 550;
+
+function wrapWordsForPlayback() {
+  const container = $('#reader-content');
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        // Skip text inside hidden footnote sections
+        let p = node.parentElement;
+        while (p && p !== container) {
+          if (p.classList && p.classList.contains('footnotes')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (p.tagName === 'SECTION' && p.classList && p.classList.contains('footnotes')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    },
+  );
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+
+  const words = [];
+  for (const textNode of textNodes) {
+    const parent = textNode.parentNode;
+    const parts = textNode.nodeValue.split(/(\s+)/);
+    const frag = document.createDocumentFragment();
+    for (const part of parts) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        frag.appendChild(document.createTextNode(part));
+      } else {
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = part;
+        frag.appendChild(span);
+        words.push(span);
+      }
+    }
+    parent.replaceChild(frag, textNode);
+  }
+  return words;
+}
+
+function unwrapWords() {
+  const container = $('#reader-content');
+  const spans = container.querySelectorAll('.word');
+  spans.forEach(span => {
+    const text = document.createTextNode(span.textContent);
+    span.parentNode.replaceChild(text, span);
+  });
+  container.normalize();
+}
+
+function findFirstVisibleWordIndex() {
+  if (!playback.words.length) return 0;
+  const inner = $('.reading-pane-inner');
+  const innerRect = inner.getBoundingClientRect();
+  for (let i = 0; i < playback.words.length; i++) {
+    const rect = playback.words[i].getBoundingClientRect();
+    if (state.mode === 'scroll') {
+      if (rect.bottom > innerRect.top + 4) return i;
+    } else {
+      if (rect.right > innerRect.left + 4 && rect.bottom > innerRect.top + 4) return i;
+    }
+  }
+  return Math.max(0, playback.words.length - 1);
+}
+
+function enterPlayback() {
+  if (playback.active) return;
+  playback.words = wrapWordsForPlayback();
+  if (!playback.words.length) return;
+  playback.active = true;
+  document.body.classList.add('playback-active');
+  playback.index = findFirstVisibleWordIndex();
+  for (let i = 0; i < playback.index; i++) {
+    playback.words[i].classList.add('revealed');
+  }
+}
+
+function exitPlayback() {
+  if (!playback.active) return;
+  pausePlayback();
+  unwrapWords();
+  playback.active = false;
+  playback.words = [];
+  playback.index = 0;
+  document.body.classList.remove('playback-active');
+  updatePlaybackButtons();
+}
+
+function startPlayback() {
+  if (!playback.active) enterPlayback();
+  if (!playback.active) return;
+  if (playback.playing) return;
+  if (playback.index >= playback.words.length) playback.index = 0;
+  playback.playing = true;
+  updatePlaybackButtons();
+  scheduleNextWord();
+}
+
+function pausePlayback() {
+  playback.playing = false;
+  if (playback.timer) {
+    clearTimeout(playback.timer);
+    playback.timer = null;
+  }
+  updatePlaybackButtons();
+}
+
+function togglePlayback() {
+  if (playback.playing) pausePlayback();
+  else startPlayback();
+}
+
+function restartPlayback() {
+  if (!state.currentChapter) return;
+  if (!playback.active) enterPlayback();
+  if (!playback.active) return;
+  pausePlayback();
+  playback.words.forEach(w => w.classList.remove('revealed'));
+  playback.index = 0;
+  if (state.mode === 'scroll') {
+    const inner = $('.reading-pane-inner');
+    inner.scrollTo({ top: 0, behavior: 'smooth' });
+    state.scrollFraction = 0;
+  } else {
+    goToPage(0);
+  }
+  setTimeout(startPlayback, 450);
+}
+
+function scheduleNextWord() {
+  if (!playback.playing) return;
+  if (playback.index >= playback.words.length) {
+    pausePlayback();
+    return;
+  }
+  const word = playback.words[playback.index];
+  word.classList.add('revealed');
+  maybeAdvanceView(word);
+  playback.index++;
+  const interval = WORD_INTERVAL_MS / state.playbackSpeed;
+  playback.timer = setTimeout(scheduleNextWord, interval);
+}
+
+function maybeAdvanceView(word) {
+  // Cooldown prevents cascading advances while a smooth scroll/page turn
+  // is still in progress. Without this, rect positions reflect the
+  // mid-transition state and trigger further advances on every tick.
+  const now = performance.now();
+  if (now - playback.lastAdvanceTime < ADVANCE_COOLDOWN_MS) return;
+
+  const inner = $('.reading-pane-inner');
+  const innerRect = inner.getBoundingClientRect();
+
+  if (state.mode === 'scroll') {
+    // Keep the active word above the bottom 30% of the pane
+    const rect = word.getBoundingClientRect();
+    const threshold = innerRect.bottom - innerRect.height * 0.3;
+    if (rect.bottom > threshold) {
+      playback.lastAdvanceTime = now;
+      const scrollAmount = innerRect.height * 0.35;
+      inner.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+    }
+    return;
+  }
+
+  // Page mode: look at the NEXT word. If it sits past the current page's
+  // right edge (i.e. lives in the next column group), the current word was
+  // the last one on this page and we should advance. Checking only the
+  // current word's rect would trigger for line-ending words inside column 2,
+  // causing premature page turns with many words still unrevealed on this page.
+  const nextWord = playback.words[playback.index + 1];
+  if (!nextWord) return;
+  const nextRect = nextWord.getBoundingClientRect();
+  if (nextRect.left >= innerRect.right &&
+      state.currentPage < state.totalPages - 1) {
+    playback.lastAdvanceTime = now;
+    nextPage();
+  }
+}
+
+function updatePlaybackButtons() {
+  const playBtn = $('#btn-play');
+  if (!playBtn) return;
+  playBtn.textContent = playback.playing ? '\u23F8' : '\u25B6';
+  playBtn.title = playback.playing ? 'Pause playback' : 'Start playback';
+}
+
+function formatSpeed(s) {
+  return (Number.isInteger(s) ? s.toString() : s.toString()) + '\u00D7';
+}
+
+function updateSpeedButton() {
+  const btn = $('#btn-speed');
+  if (!btn) return;
+  btn.textContent = formatSpeed(state.playbackSpeed);
+  $$('#speed-menu .speed-option').forEach(opt => {
+    const val = parseFloat(opt.dataset.speed);
+    opt.classList.toggle('active', val === state.playbackSpeed);
+  });
+}
+
+function applyFadeDuration() {
+  const ms = state.fadeEnabled ? BASE_FADE_MS / state.playbackSpeed : 0;
+  document.documentElement.style.setProperty('--word-fade-duration', ms + 'ms');
+}
+
+function setPlaybackSpeed(speed) {
+  state.playbackSpeed = speed;
+  savePrefs();
+  updateSpeedButton();
+  applyFadeDuration();
+  // If currently playing, restart the timer so the new interval takes effect
+  if (playback.playing && playback.timer) {
+    clearTimeout(playback.timer);
+    const interval = WORD_INTERVAL_MS / state.playbackSpeed;
+    playback.timer = setTimeout(scheduleNextWord, interval);
+  }
+}
+
+function setFadeEnabled(enabled) {
+  state.fadeEnabled = enabled;
+  savePrefs();
+  updateFadeToggle();
+  applyFadeDuration();
+}
+
+function toggleFade() {
+  setFadeEnabled(!state.fadeEnabled);
+}
+
+function updateFadeToggle() {
+  const btn = $('#btn-fade-toggle');
+  if (btn) btn.classList.toggle('active', state.fadeEnabled);
+}
+
+function toggleSpeedMenu() {
+  const menu = $('#speed-menu');
+  if (!menu) return;
+  const willOpen = menu.hasAttribute('hidden');
+  if (willOpen) {
+    menu.removeAttribute('hidden');
+    setTimeout(() => {
+      document.addEventListener('click', onSpeedMenuOutsideClick);
+    }, 0);
+  } else {
+    closeSpeedMenu();
+  }
+}
+
+function closeSpeedMenu() {
+  const menu = $('#speed-menu');
+  if (menu) menu.setAttribute('hidden', '');
+  document.removeEventListener('click', onSpeedMenuOutsideClick);
+}
+
+function onSpeedMenuOutsideClick(e) {
+  const wrapper = e.target.closest('.speed-wrapper');
+  if (!wrapper) closeSpeedMenu();
+}
+
+function syncPlaybackToView() {
+  if (!playback.active || !playback.words.length) return;
+  const newIndex = findFirstVisibleWordIndex();
+  for (let i = 0; i < newIndex; i++) {
+    playback.words[i].classList.add('revealed');
+  }
+  for (let i = newIndex; i < playback.words.length; i++) {
+    playback.words[i].classList.remove('revealed');
+  }
+  playback.index = newIndex;
+}
+
+// --- Progress Bar Click ---
+
+function onProgressClick(e) {
+  if (!state.currentChapter) return;
+  const track = e.currentTarget;
+  const rect = track.getBoundingClientRect();
+  const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+  if (state.mode === 'scroll') {
+    state.scrollFraction = fraction;
+    applyScrollPosition(fraction);
+    updateProgress();
+    savePrefs();
+  } else {
+    const targetPage = Math.round(fraction * (state.totalPages - 1));
+    goToPage(targetPage);
+  }
+
+  if (playback.active) {
+    // Wait for scroll/page transition before resyncing cursor
+    setTimeout(syncPlaybackToView, 350);
+  }
 }
 
 // --- Footnote Popovers ---
@@ -448,8 +875,33 @@ function handleKeydown(e) {
     return;
   }
 
-  // Only handle page turns in reader view
+  // Only handle navigation in reader view
   if (!state.currentChapter) return;
+
+  if (state.mode === 'scroll') {
+    const inner = $('.reading-pane-inner');
+    const step = inner.clientHeight * 0.9;
+    if (e.key === 'ArrowDown' || e.key === ' ') {
+      e.preventDefault();
+      inner.scrollBy({ top: step, behavior: 'smooth' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      inner.scrollBy({ top: -step, behavior: 'smooth' });
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      inner.scrollBy({ top: step, behavior: 'smooth' });
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      inner.scrollBy({ top: -step, behavior: 'smooth' });
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      inner.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      inner.scrollTo({ top: inner.scrollHeight, behavior: 'smooth' });
+    }
+    return;
+  }
 
   if (e.key === 'ArrowRight' || e.key === ' ') {
     e.preventDefault();
@@ -466,8 +918,11 @@ let resizeTimer;
 function handleResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    if (state.currentChapter) {
-      recalcPages();
+    if (!state.currentChapter) return;
+    recalcPages();
+    if (state.mode === 'scroll') {
+      applyScrollPosition(state.scrollFraction);
+    } else {
       goToPage(state.currentPage);
     }
   }, 150);
@@ -481,6 +936,11 @@ async function init() {
   applyTheme(state.theme);
   applyFontSize(state.fontSize);
   updateThemeButton();
+  updateModeButton();
+  updateSpeedButton();
+  updateFadeToggle();
+  applyFadeDuration();
+  $('.reader-view').classList.toggle('scroll-mode', state.mode === 'scroll');
 
   // Wire up buttons
   $('#btn-back').addEventListener('click', showLibrary);
@@ -489,10 +949,36 @@ async function init() {
   $('#btn-font-up').addEventListener('click', () => applyFontSize(state.fontSize + FONT_STEP));
   $('#btn-font-down').addEventListener('click', () => applyFontSize(state.fontSize - FONT_STEP));
   $('#btn-toc').addEventListener('click', toggleSidebar);
+  $('#btn-mode').addEventListener('click', toggleMode);
+  $('#btn-play').addEventListener('click', togglePlayback);
+  $('#btn-restart-playback').addEventListener('click', restartPlayback);
+  $('#btn-stop-playback').addEventListener('click', exitPlayback);
+  $('#btn-speed').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSpeedMenu();
+  });
+  $$('#speed-menu .speed-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      setPlaybackSpeed(parseFloat(opt.dataset.speed));
+      closeSpeedMenu();
+    });
+  });
+  $('#btn-fade-toggle').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFade();
+  });
 
   // Page turn click zones
   $('#zone-left').addEventListener('click', prevPage);
   $('#zone-right').addEventListener('click', nextPage);
+
+  // Track scroll position in scroll mode
+  $('.reading-pane-inner').addEventListener('scroll', () => {
+    if (state.mode === 'scroll') onScrollModeScroll();
+  });
+
+  // Click progress bar to jump
+  $('.progress-track').addEventListener('click', onProgressClick);
 
   // Keyboard & resize
   document.addEventListener('keydown', handleKeydown);
