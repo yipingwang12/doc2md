@@ -98,3 +98,19 @@ def link_index_cmd(volume_dir):
         click.echo(f"Index linked: {result}")
     else:
         click.echo("No index chapter found or no chapters with page ranges.")
+
+
+@main.command()
+@click.argument("term")
+@click.option("--output-dir", type=click.Path(), default=None,
+              help="Override results directory.")
+@click.option("--context", "-c", default=0, type=int,
+              help="Number of surrounding paragraphs to include.")
+@click.pass_context
+def search(ctx, term, output_dir, context):
+    """Search for a term across all volumes' indexes."""
+    from doc2md.assembly.search import search_all, format_results
+    config = ctx.obj["config"]
+    results_dir = Path(output_dir) if output_dir else Path(config.paths.output_dir)
+    result = search_all(results_dir, term, context)
+    click.echo(format_results(result))
