@@ -39,7 +39,8 @@ _NAMED_SECTION_RE = re.compile(
 )
 # CONCLUSION. Title or APPENDIX. Title (may wrap)
 _TITLED_SECTION_RE = re.compile(
-    r"^(CONCLUSION|APPENDIX)[.\s]+(.+)$", re.IGNORECASE,
+    r"^(CONCLUSION|APPENDIX|AFTERWORD|FOREWORD|EPILOGUE|PROLOGUE)[.\s:]+(.+)$",
+    re.IGNORECASE,
 )
 # TOC region markers
 _CONTENTS_RE = re.compile(r"^(?:<b>)?Contents(?:</b>)?$", re.IGNORECASE)

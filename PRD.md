@@ -153,6 +153,30 @@ Each chapter file contains:
 - *A History of Boston in 50 Artifacts* (209 Libby screenshots, 59.6k words, 59 chapters) — 23 min OCR, 85% index entry match rate
 - 10 books, 358 chapters, 2,831 section headings, 13,268 footnotes linked, 20,427 index links
 
+## Processing Log
+
+### The Wood at Midwinter (Susanna Clarke)
+
+- **Source**: 26 Libby screenshots (landscape spreads), 36 MB, synced from Google Drive
+- **Pipeline**: `is_libby_spread()` → True → `extract_screenshot_spread()` (split at midpoint, batch OCR, skip image-only pages)
+- **OCR**: Surya, CPU only (M3 Max, MPS disabled by sandbox), **1.8 min**
+- **Output**: 414 lines, single chapter ("Untitled") — short story with no internal headings
+- **Post-processing**: manual `split_markdown()` with explicit `ChapterDef` list (4 sections: front matter, story, afterword, publisher info); auto-detection catches `Afterword: Snow` via `_TITLED_SECTION_RE`
+- **No index** in source
+
+### Morocco: Globalization and Its Consequences (Cohen & Jaidi)
+
+- **Source**: 103 browser screenshots (portrait, single-page, from VBoooks web viewer with browser chrome), 38 MB, synced from Google Drive
+- **Pipeline**: `is_libby_spread()` → False → `extract_screenshots()` (one page per image, no splitting) → `deduplicate()` → `detect_page_numbers()` (LLM) → `reorder_pages()`
+- **OCR**: Surya, CPU only, **17.4 min** (multiple batch passes: detection + recognition repeated across dedup/reorder stages)
+- **Output**: 7,118 lines, single chapter
+- **Structure detected**: TOC with page numbers (ix, 1, 47, 79, 113, 151), 4 numbered chapters (`CHAPTER ONE` through `CHAPTER FOUR`), Preface, Conclusion, Endnotes, Bibliography, Index
+- **Issues found**:
+  1. **Browser chrome in OCR** — tab titles, URL bar, navigation buttons captured as text (screenshots include full browser window, not just page content)
+  2. **Running headers not stripped** — chapter titles repeat as page headers on every page (e.g., `Debating and Implementing "Development" in Morocco` appears ~25 times); `detect_repeated_lines()` didn't catch them, possibly because OCR inconsistencies prevent exact matching
+  3. **Page numbers in headers** — OCR'd page numbers mixed into body text (e.g., `43 Debating and Implementing "Development" in Morocco`)
+- **TODO**: split into chapters, strip browser chrome and running headers, link index
+
 ## Known Limitations
 
 - **Unsectioned chapters** — 14 files (mostly indexes, contributor lists, and continuous essays) have no section headings detected because the source PDFs genuinely lack them
