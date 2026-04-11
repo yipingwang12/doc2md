@@ -94,18 +94,30 @@ def _is_sub_entry(line: str) -> bool:
     return line[0].islower() or line[0] == '"'
 
 
+_BIBLIO_START_RE = re.compile(r"^\[\^\d+\]:|^\d{4}\s+[A-Z]")
+
+
 def parse_index_md(text: str) -> list[IndexEntry]:
     """Parse index markdown into structured entries."""
     lines = text.splitlines()
     entries: list[IndexEntry] = []
     current: IndexEntry | None = None
+    prev_blank = False
 
     for line in lines:
         stripped = line.strip()
 
-        # Skip headings, blank lines, page-number headings, NB notes
+        # Double blank line or bibliography entry signals end of index
         if not stripped:
+            if prev_blank and entries:
+                break
+            prev_blank = True
             continue
+        if _BIBLIO_START_RE.match(stripped) and entries:
+            break
+        prev_blank = False
+
+        # Skip headings, page-number headings, NB notes
         if stripped.startswith("#"):
             if _PAGE_HEADING_RE.match(stripped):
                 continue
@@ -183,23 +195,42 @@ def parse_index_md(text: str) -> list[IndexEntry]:
                 current.sub_entries[-1].page_refs.extend(new_refs)
             else:
                 current.page_refs.extend(new_refs)
+            current.raw_text += "\n" + stripped
             if pending_see_also:
                 current.see_also.append(_pending_see_also_targets)
             continue
 
-        # Check if this is a wrapped text continuation (lowercase after comma-ending)
-        if current and current.raw_text.rstrip().endswith(",") and _is_sub_entry(stripped):
-            term, ref_text = _split_term_and_refs(stripped)
-            refs = parse_page_refs(ref_text)
-            if current.sub_entries:
-                last = current.sub_entries[-1]
-                last.term += " " + term
-                last.page_refs.extend(refs)
-            else:
-                current.term += " " + term
-                current.page_refs.extend(refs)
-            current.raw_text += "\n" + stripped
-            continue
+        # Check if this is a wrapped text continuation.
+        # A line is a continuation when the previous raw_text ends
+        # mid-phrase: after a semicolon sub-topic separator, after a
+        # comma, or with a word fragment that isn't a page reference.
+        if current:
+            prev_raw = current.raw_text.rstrip()
+            # Get the last raw line (for multi-line entries)
+            prev_last = prev_raw.split("\n")[-1].rstrip()
+            # A line wraps when it ends mid-phrase:
+            # - ends with comma or semicolon, OR
+            # - ends with a word AND the line contains page refs
+            #   (distinguishes "...146; in Native" from "Albertus Magnus")
+            has_refs_on_line = bool(re.search(r"\d", prev_last))
+            is_continuation = (
+                prev_last.endswith(",")
+                or prev_last.endswith(";")
+                or (has_refs_on_line and re.search(r"[a-zA-Z]$", prev_last) is not None)
+            )
+            if is_continuation:
+                term, ref_text = _split_term_and_refs(stripped)
+                refs = parse_page_refs(ref_text)
+                if current.sub_entries:
+                    last = current.sub_entries[-1]
+                    last.term += " " + term
+                    last.page_refs.extend(refs)
+                    last.raw_text += "\n" + stripped
+                else:
+                    current.term += " " + term
+                    current.page_refs.extend(refs)
+                current.raw_text += "\n" + stripped
+                continue
 
         # Sub-entry or new main entry?
         term, ref_text = _split_term_and_refs(stripped)
@@ -252,6 +283,32 @@ def build_chapter_map(volume_dir: Path) -> list[ChapterFile]:
     return chapters
 
 
+def build_chapter_map_pageless(volume_dir: Path) -> list[ChapterFile]:
+    """Build chapter list without requiring _pp_ page ranges in dir names.
+
+    Used for books (e.g. Libby screenshots) where physical page numbers
+    are unavailable. Sets page_start=0, page_end=0 since page ranges
+    are unused in pageless linking mode.
+    """
+    chapters = []
+    for d in sorted(volume_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if d.name.startswith(".") or d.name.endswith(".orig"):
+            continue
+        if "index" in d.name.lower():
+            continue
+
+        md_files = sorted(d.glob("chapter_*.md"))
+        if not md_files:
+            continue
+
+        text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in md_files)
+        chapters.append(ChapterFile(d.name, 0, 0, md_files, text))
+
+    return chapters
+
+
 def find_chapter_for_page(page: int, chapters: list[ChapterFile]) -> ChapterFile | None:
     """Return the chapter whose page range contains the given page.
 
@@ -278,24 +335,47 @@ def _md_path_for_chapter(ch: ChapterFile) -> str:
     return "chapter_01_.md"
 
 
+_TAG_STRIP_RE = re.compile(r"</?(?:b|i|math|sup|a)[^>]*>")
+_PAREN_RE = re.compile(r"\s*\([^)]*\)")
+
+
 def _term_variants(term: str) -> list[str]:
     """Generate search variants for an index term.
 
     'Abelard, Peter' -> ['abelard, peter', 'peter abelard', 'abelard']
     'medicine in Africa' -> ['medicine in africa', 'medicine', 'africa']
-    'Summa perfectionis of Geber' -> ['summa perfectionis of geber', 'summa perfectionis']
+    'AMS (accelerated mass spectrometer) dating' -> [..., 'ams dating']
+    'Beacon Hill: as fashionable neighborhood' -> [..., 'beacon hill']
+    '<b>Boston Town Records</b>' -> [..., 'boston town records']
     """
-    low = term.lower().strip()
+    # Strip HTML tags first
+    cleaned = _TAG_STRIP_RE.sub("", term).strip()
+    low = cleaned.lower().strip()
     variants = [low]
+
     # "Last, First" -> "First Last"
     if ", " in low:
         parts = low.split(", ", 1)
         variants.append(f"{parts[1]} {parts[0]}")
         variants.append(parts[0])
-    # Try last significant word (proper noun after preposition)
+
+    # Strip parenthetical qualifiers: "AMS (accelerated mass spectrometer) dating" -> "ams dating"
+    if "(" in low:
+        no_parens = _PAREN_RE.sub("", low).strip()
+        if no_parens and no_parens != low:
+            variants.append(no_parens)
+
+    # Strip after colon/semicolon: "Beacon Hill: as fashionable..." -> "beacon hill"
+    for sep in (":", ";"):
+        if sep in low:
+            base = low.split(sep, 1)[0].strip().rstrip(",")
+            if base and base != low:
+                variants.append(base)
+            break
+
+    # Drop trailing preposition phrases for matching
     words = low.split()
     if len(words) > 2:
-        # Drop trailing preposition phrases for matching
         for prep in ("in", "of", "and", "the", "on", "at", "for", "from"):
             if prep in words[1:]:
                 idx = words.index(prep, 1)
@@ -374,6 +454,71 @@ def render_linked_index(
     return "\n".join(rendered) + "\n"
 
 
+# --- Pageless rendering (term-only matching, no page ranges) ---
+
+
+def _find_chapters_for_term(term: str, chapters: list[ChapterFile]) -> list[ChapterFile]:
+    """Find all chapters containing any variant of the term."""
+    return [ch for ch in chapters if _term_in_chapter(term, ch)]
+
+
+def _render_entry_pageless(entry: IndexEntry, chapters: list[ChapterFile], index_dir: str) -> str:
+    """Render an IndexEntry using term-only matching (no page ranges)."""
+    if not entry.page_refs and not entry.sub_entries and not entry.see_also:
+        return entry.raw_text or entry.term
+
+    parts = [entry.term]
+    matched = _find_chapters_for_term(entry.term, chapters)
+
+    if matched:
+        links = []
+        for ch in matched:
+            md_file = _md_path_for_chapter(ch)
+            rel = f"../{ch.dir_name}/{md_file}"
+            # Use chapter dir name as display text
+            label = ch.dir_name.split("_", 1)[-1].replace("_", " ").strip()
+            if not label:
+                label = ch.dir_name
+            links.append(f"[{label}]({rel})")
+        parts.append(", " + ", ".join(links))
+    elif entry.page_refs:
+        ref_strs = [r.label() for r in entry.page_refs]
+        parts.append(", " + ", ".join(ref_strs))
+
+    lines = [_join_parts(parts)]
+
+    for sub in entry.sub_entries:
+        sub_matched = _find_chapters_for_term(sub.term, chapters)
+        if sub_matched:
+            sub_links = []
+            for ch in sub_matched:
+                md_file = _md_path_for_chapter(ch)
+                rel = f"../{ch.dir_name}/{md_file}"
+                label = ch.dir_name.split("_", 1)[-1].replace("_", " ").strip() or ch.dir_name
+                sub_links.append(f"[{label}]({rel})")
+            lines.append(sub.term + ", " + ", ".join(sub_links))
+        else:
+            lines.append(sub.raw_text or sub.term)
+
+    see_targets = [s for s in entry.see_also if s]
+    if see_targets:
+        lines.append("See also " + ", ".join(see_targets))
+
+    return "\n".join(lines)
+
+
+def render_linked_index_pageless(
+    entries: list[IndexEntry],
+    chapters: list[ChapterFile],
+    index_dir: str,
+) -> str:
+    """Render all index entries with term-only matching (no page ranges)."""
+    rendered = ["# INDEX\n"]
+    for entry in entries:
+        rendered.append(_render_entry_pageless(entry, chapters, index_dir))
+    return "\n".join(rendered) + "\n"
+
+
 # --- Orchestrator ---
 
 _INDEX_DIR_RE = re.compile(r"index", re.IGNORECASE)
@@ -398,14 +543,21 @@ def _find_index_file(volume_dir: Path) -> Path | None:
 def link_index(volume_dir: Path) -> Path | None:
     """Link index entries to chapter files in a volume output directory.
 
+    Uses page-range mode when directories have _pp_START_END_ naming.
+    Falls back to pageless term-only matching when no page ranges found.
+
     Saves the original index as .orig.md on first run. Subsequent runs
     always read from .orig.md to avoid corruption from re-parsing
     linked output.
 
     Returns path to updated index file, or None if no index found
-    or no chapters with page ranges.
+    or no chapters available.
     """
     chapters = build_chapter_map(volume_dir)
+    pageless = False
+    if not chapters:
+        chapters = build_chapter_map_pageless(volume_dir)
+        pageless = True
     if not chapters:
         return None
 
@@ -415,18 +567,19 @@ def link_index(volume_dir: Path) -> Path | None:
 
     orig_file = index_file.with_suffix(".orig.md")
     if not orig_file.exists():
-        # First run: save original before overwriting
         orig_file.write_text(
             index_file.read_text(encoding="utf-8", errors="replace"),
             encoding="utf-8",
         )
 
-    # Always read from the original
     text = orig_file.read_text(encoding="utf-8", errors="replace")
     entries = parse_index_md(text)
     if not entries:
         return None
 
-    linked = render_linked_index(entries, chapters, index_file.parent.name)
+    if pageless:
+        linked = render_linked_index_pageless(entries, chapters, index_file.parent.name)
+    else:
+        linked = render_linked_index(entries, chapters, index_file.parent.name)
     index_file.write_text(linked, encoding="utf-8")
     return index_file

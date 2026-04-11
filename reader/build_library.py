@@ -112,7 +112,7 @@ def build_library(results_dir: Path = DEFAULT_RESULTS_DIR) -> dict:
         seen_hashes: set[str] = set()
 
         for chapter_dir in sorted(volume_dir.iterdir()):
-            if not chapter_dir.is_dir() or chapter_dir.name.startswith("."):
+            if not chapter_dir.is_dir() or chapter_dir.name.startswith(".") or chapter_dir.name.endswith(".orig"):
                 continue
 
             if chapter_dir.name in SKIP_DIRS:

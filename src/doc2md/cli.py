@@ -88,6 +88,33 @@ def clean(ctx):
     click.echo("Cache cleared.")
 
 
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--output-dir", type=click.Path(), default=None,
+              help="Override output directory (default: same parent as input).")
+@click.option("--artifacts", is_flag=True,
+              help="Split at individual artifact/item level within PARTs.")
+def split(path, output_dir, artifacts):
+    """Split a single-file markdown book into per-chapter directories."""
+    from doc2md.output.chapter_splitter import split_markdown
+    md_path = Path(path)
+    out = Path(output_dir) if output_dir else md_path.parent.parent
+    paths = split_markdown(md_path, out, artifact_level=artifacts)
+    if not paths:
+        click.echo("No chapters detected.")
+        return
+    # Archive original directory to avoid duplication with split output
+    source_dir = md_path.parent
+    if source_dir.parent == out and source_dir.exists():
+        archive = source_dir.with_name(source_dir.name + ".orig")
+        if not archive.exists():
+            source_dir.rename(archive)
+            click.echo(f"Archived original: {source_dir.name} → {archive.name}")
+    click.echo(f"Split into {len(paths)} chapters:")
+    for p in paths:
+        click.echo(f"  {p.parent.name}/{p.name}")
+
+
 @main.command(name="link-index")
 @click.argument("volume_dir", type=click.Path(exists=True))
 def link_index_cmd(volume_dir):
@@ -97,7 +124,7 @@ def link_index_cmd(volume_dir):
     if result:
         click.echo(f"Index linked: {result}")
     else:
-        click.echo("No index chapter found or no chapters with page ranges.")
+        click.echo("No index chapter found or no chapter directories available.")
 
 
 @main.command()

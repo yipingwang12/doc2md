@@ -8,14 +8,17 @@ from doc2md.assembly.index_linker import (
     ChapterFile,
     IndexEntry,
     PageRef,
+    _render_entry_pageless,
     _term_variants,
     build_chapter_map,
+    build_chapter_map_pageless,
     expand_abbreviated_end,
     find_chapter_for_page,
     link_index,
     parse_index_md,
     parse_page_refs,
     render_linked_index,
+    render_linked_index_pageless,
 )
 
 
@@ -37,6 +40,26 @@ class TestTermVariants:
     def test_title_with_of(self):
         variants = _term_variants("Summa perfectionis of Geber")
         assert "summa perfectionis" in variants
+
+    def test_strip_parenthetical(self):
+        variants = _term_variants("AMS (accelerated mass spectrometer) dating")
+        assert "ams dating" in variants
+
+    def test_strip_after_colon(self):
+        variants = _term_variants("Beacon Hill: as fashionable neighborhood")
+        assert "beacon hill" in variants
+
+    def test_strip_after_semicolon(self):
+        variants = _term_variants("pottery; women's involvement in industry")
+        assert "pottery" in variants
+
+    def test_strip_html_tags(self):
+        variants = _term_variants("<b>Boston Town Records</b>")
+        assert "boston town records" in variants
+
+    def test_html_and_parenthetical_combined(self):
+        variants = _term_variants("<i>Big Dig</i> (Central Artery/Tunnel project)")
+        assert "big dig" in variants
 
 
 # --- expand_abbreviated_end ---
@@ -429,12 +452,116 @@ class TestLinkIndex:
         (ch / "chapter_01_.md").write_text("Text\n")
         assert link_index(vol) is None
 
-    def test_no_page_range_dirs(self, tmp_path):
+    def test_no_page_range_dirs_uses_pageless(self, tmp_path):
+        """Without _pp_ dirs, link_index falls back to pageless term matching."""
         vol = tmp_path / "volume"
-        ch = vol / "greek_mathematics"
+        ch = vol / "010_greek_mathematics"
         ch.mkdir(parents=True)
-        (ch / "chapter_01_.md").write_text("Text\n")
-        idx = vol / "index"
+        (ch / "chapter_01_greek_mathematics.md").write_text(
+            "The abacus was used in Greek mathematics.\n"
+        )
+        idx = vol / "020_index"
         idx.mkdir()
         (idx / "chapter_01_index.md").write_text("# INDEX\n\nabacus, 30\n")
-        assert link_index(vol) is None
+        result = link_index(vol)
+        assert result is not None
+        text = result.read_text()
+        assert "[" in text  # should contain links
+        assert "greek_mathematics" in text
+
+
+# --- Pageless linking tests ---
+
+
+class TestBuildChapterMapPageless:
+    def test_loads_all_chapter_dirs(self, tmp_path):
+        vol = tmp_path / "volume"
+        (vol / "010_preface").mkdir(parents=True)
+        (vol / "010_preface" / "chapter_01_preface.md").write_text("Preface text.\n")
+        (vol / "020_introduction").mkdir(parents=True)
+        (vol / "020_introduction" / "chapter_01_introduction.md").write_text("Intro text.\n")
+        (vol / "030_index").mkdir(parents=True)
+        (vol / "030_index" / "chapter_01_index.md").write_text("Index text.\n")
+
+        chapters = build_chapter_map_pageless(vol)
+        assert len(chapters) == 2  # index dir excluded
+        dir_names = [c.dir_name for c in chapters]
+        assert "010_preface" in dir_names
+        assert "020_introduction" in dir_names
+
+    def test_skips_index_dir(self, tmp_path):
+        vol = tmp_path / "volume"
+        (vol / "010_chapter").mkdir(parents=True)
+        (vol / "010_chapter" / "chapter_01_.md").write_text("Text.\n")
+        (vol / "020_index").mkdir(parents=True)
+        (vol / "020_index" / "chapter_01_index.md").write_text("Index.\n")
+
+        chapters = build_chapter_map_pageless(vol)
+        assert len(chapters) == 1
+        assert "index" not in chapters[0].dir_name
+
+
+class TestRenderEntryPageless:
+    def _make_chapters(self) -> list[ChapterFile]:
+        return [
+            ChapterFile("010_preface", 0, 0, [], "The author thanks everyone."),
+            ChapterFile("020_introduction", 0, 0, [], "Samuel Adams led the revolt."),
+            ChapterFile("030_part_1", 0, 0, [], "Artifacts from ancient times."),
+        ]
+
+    def test_links_to_matching_chapters(self):
+        chapters = self._make_chapters()
+        entry = IndexEntry(
+            term="Adams, Samuel",
+            page_refs=[PageRef(101)],
+            raw_text="Adams, Samuel, 101",
+        )
+        result = _render_entry_pageless(entry, chapters, "index")
+        assert "[" in result
+        assert "introduction" in result
+        # Should not link to preface or part_1
+        assert "preface" not in result
+        assert "part_1" not in result
+
+    def test_no_match_keeps_plain_text(self):
+        chapters = self._make_chapters()
+        entry = IndexEntry(
+            term="Nonexistent Person",
+            page_refs=[PageRef(42)],
+            raw_text="Nonexistent Person, 42",
+        )
+        result = _render_entry_pageless(entry, chapters, "index")
+        assert "[" not in result
+        assert "42" in result
+
+    def test_multiple_chapter_matches(self):
+        chapters = [
+            ChapterFile("010_ch1", 0, 0, [], "The cat sat on the mat."),
+            ChapterFile("020_ch2", 0, 0, [], "Another cat appeared."),
+        ]
+        entry = IndexEntry(term="cat", page_refs=[PageRef(5)], raw_text="cat, 5")
+        result = _render_entry_pageless(entry, chapters, "index")
+        assert "ch1" in result
+        assert "ch2" in result
+
+
+class TestRenderLinkedIndexPageless:
+    def test_full_render(self):
+        chapters = [
+            ChapterFile("010_introduction", 0, 0, [], "Boston was founded in 1630."),
+            ChapterFile("020_part_1", 0, 0, [], "Artifacts from Shawmut peninsula."),
+        ]
+        entries = [
+            IndexEntry(term="Boston", page_refs=[PageRef(1)], raw_text="Boston, 1"),
+            IndexEntry(
+                term="Shawmut",
+                page_refs=[PageRef(7)],
+                raw_text="Shawmut, 7",
+            ),
+        ]
+        result = render_linked_index_pageless(entries, chapters, "index")
+        assert "# INDEX" in result
+        # Boston appears in introduction
+        assert "introduction" in result
+        # Shawmut appears in part_1
+        assert "part_1" in result
