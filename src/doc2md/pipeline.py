@@ -21,7 +21,11 @@ from doc2md.cache import Cache
 from doc2md.config import Config
 from doc2md.extract.detect import extract_auto
 from doc2md.extract.ocr_extract import extract_screenshots
-from doc2md.extract.screenshot_extract import extract_screenshot_spread, is_libby_spread
+from doc2md.extract.screenshot_extract import (
+    extract_screenshot_spread,
+    is_browser_screenshot,
+    is_libby_spread,
+)
 from doc2md.ingest.file_scanner import ScanResult, scan_directories
 from doc2md.models import Document, Page
 from doc2md.ordering.dedup import deduplicate
@@ -48,12 +52,17 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
 
     doc_name = path.stem if path.is_file() else path.name
     is_libby = path.is_dir() and is_libby_spread(path)
+    is_browser = path.is_dir() and not is_libby and is_browser_screenshot(path)
+    is_ordered = is_libby or is_browser
 
     # Stage 1: Extract
     completed = cache.get_completed_stages(path)
     if "extract" not in completed or force:
         if path.is_dir():
-            pages = extract_screenshot_spread(path) if is_libby else extract_screenshots(path)
+            if is_libby:
+                pages = extract_screenshot_spread(path)
+            else:
+                pages = extract_screenshots(path, auto_number=is_ordered)
         else:
             pages = extract_auto(
                 path,
@@ -64,7 +73,10 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     else:
         # Re-extract since we don't persist intermediate pages yet
         if path.is_dir():
-            pages = extract_screenshot_spread(path) if is_libby else extract_screenshots(path)
+            if is_libby:
+                pages = extract_screenshot_spread(path)
+            else:
+                pages = extract_screenshots(path, auto_number=is_ordered)
         else:
             pages = extract_auto(path)
 
@@ -81,8 +93,8 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     boilerplate = detect_boilerplate_lines(pages)
     pages = strip_headers_footers(pages, repeated | boilerplate)
 
-    # Stage 3: Dedup and reorder (for non-Libby screenshots only)
-    if path.is_dir() and not is_libby:
+    # Stage 3: Dedup and reorder (for unordered screenshots only)
+    if path.is_dir() and not is_ordered:
         pages = deduplicate(pages, llm_client=llm_client)
         pages = detect_page_numbers(pages, llm_client)
         pages = reorder_pages(pages)

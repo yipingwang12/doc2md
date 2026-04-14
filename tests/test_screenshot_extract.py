@@ -1,4 +1,4 @@
-"""Tests for Libby screenshot spread extraction."""
+"""Tests for screenshot format detection and extraction."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from PIL import Image
 from doc2md.extract.screenshot_extract import (
     _split_image,
     extract_screenshot_spread,
+    is_browser_screenshot,
     is_libby_spread,
 )
 
@@ -78,8 +79,40 @@ class TestIsLibbySpread:
         assert is_libby_spread(tmp_path) is False
 
 
+class TestIsBrowserScreenshot:
+    @patch("doc2md.extract.screenshot_extract.detect_content_bounds")
+    def test_detected_when_chrome_present(self, mock_detect, tmp_path):
+        """Uniform portrait images with chrome → True."""
+        for i in range(5):
+            _save_image(tmp_path / f"img_{i}.png", 1920, 1080)
+        mock_detect.return_value = (65, 95, 1905, 1080)
+        assert is_browser_screenshot(tmp_path) is True
+
+    @patch("doc2md.extract.screenshot_extract.detect_content_bounds")
+    def test_no_chrome_returns_false(self, mock_detect, tmp_path):
+        """Uniform images but no chrome detected → False."""
+        for i in range(5):
+            _save_image(tmp_path / f"img_{i}.png", 1920, 1080)
+        mock_detect.return_value = None
+        assert is_browser_screenshot(tmp_path) is False
+
+    def test_mixed_sizes_returns_false(self, tmp_path):
+        _save_image(tmp_path / "a.png", 1920, 1080)
+        _save_image(tmp_path / "b.png", 1024, 768)
+        _save_image(tmp_path / "c.png", 1920, 1080)
+        assert is_browser_screenshot(tmp_path) is False
+
+    def test_fewer_than_3_returns_false(self, tmp_path):
+        _save_image(tmp_path / "a.png", 1920, 1080)
+        _save_image(tmp_path / "b.png", 1920, 1080)
+        assert is_browser_screenshot(tmp_path) is False
+
+    def test_empty_folder_returns_false(self, tmp_path):
+        assert is_browser_screenshot(tmp_path) is False
+
+
 class TestPageOrdering:
-    @patch("doc2md.extract.screenshot_extract._get_predictors")
+    @patch("doc2md.extract.ocr_extract._get_predictors")
     def test_left_before_right(self, mock_predictors, tmp_path):
         """Pages should be: img1_left, img1_right, img2_left, img2_right."""
         _save_image(tmp_path / "Screenshot 2026-01-20 at 11.52.07 AM.png", 200, 100)
@@ -117,7 +150,7 @@ class TestPageOrdering:
 
 
 class TestImageOnlySkip:
-    @patch("doc2md.extract.screenshot_extract._get_predictors")
+    @patch("doc2md.extract.ocr_extract._get_predictors")
     def test_few_bboxes_skipped(self, mock_predictors, tmp_path):
         """Pages with <3 bboxes should have empty raw_text and skip recognition."""
         _save_image(tmp_path / "img.png", 200, 100)
