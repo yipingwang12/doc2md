@@ -215,6 +215,9 @@ def detect_chapters(
     """
     chapters: list[ChapterDef] = []
     toc_end = _find_toc_end(lines)
+    # Track sections already emitted so running headers (same section
+    # title repeating at every page top) don't create duplicate chapters.
+    seen_named: set[str] = set()
 
     i = toc_end
     while i < len(lines):
@@ -223,6 +226,11 @@ def detect_chapters(
         # Named section: Preface, Acknowledgments, Introduction, etc.
         m = _NAMED_SECTION_RE.match(stripped)
         if m:
+            key = m.group(1).lower()
+            if key in seen_named:
+                i += 1
+                continue
+            seen_named.add(key)
             chapters.append(ChapterDef(title=m.group(1), start_line=i))
             i += 1
             continue
@@ -247,6 +255,17 @@ def detect_chapters(
         # CONCLUSION. Title or APPENDIX. Title
         m = _TITLED_SECTION_RE.match(stripped)
         if m:
+            # Reject mid-paragraph matches: real headers are short. OCR
+            # can merge parallel columns into long lines that start with
+            # a section word by coincidence.
+            if len(_strip_tags(stripped)) > 80:
+                i += 1
+                continue
+            key = m.group(1).lower()
+            if key in seen_named:
+                i += 1
+                continue
+            seen_named.add(key)
             section = m.group(1).title()
             subtitle = m.group(2).strip()
             if i + 1 < len(lines):

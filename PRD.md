@@ -166,16 +166,12 @@ Each chapter file contains:
 
 ### Morocco: Globalization and Its Consequences (Cohen & Jaidi)
 
-- **Source**: 103 browser screenshots (portrait, single-page, from VBoooks web viewer with browser chrome), 38 MB, synced from Google Drive
-- **Pipeline**: `is_libby_spread()` → False → `extract_screenshots()` (one page per image, no splitting) → `deduplicate()` → `detect_page_numbers()` (LLM) → `reorder_pages()`
-- **OCR**: Surya, CPU only, **17.4 min** (multiple batch passes: detection + recognition repeated across dedup/reorder stages)
-- **Output**: 7,118 lines, single chapter
-- **Structure detected**: TOC with page numbers (ix, 1, 47, 79, 113, 151), 4 numbered chapters (`CHAPTER ONE` through `CHAPTER FOUR`), Preface, Conclusion, Endnotes, Bibliography, Index
-- **Issues found**:
-  1. **Browser chrome in OCR** — tab titles, URL bar, navigation buttons captured as text (screenshots include full browser window, not just page content)
-  2. **Running headers not stripped** — chapter titles repeat as page headers on every page (e.g., `Debating and Implementing "Development" in Morocco` appears ~25 times); `detect_repeated_lines()` didn't catch them, possibly because OCR inconsistencies prevent exact matching
-  3. **Page numbers in headers** — OCR'd page numbers mixed into body text (e.g., `43 Debating and Implementing "Development" in Morocco`)
-- **TODO**: split into chapters, strip browser chrome and running headers, link index
+- **Source**: 103 browser screenshots (1366×768, full-screen captures of VBooks web viewer with Ubuntu panel + Chrome tabs + dock visible), 38 MB
+- **Current pipeline** (after optimizations — see `morocco_processing_notes.md` for history): `is_browser_screenshot()` → True → `extract_screenshots(auto_number=True)` with chrome cropping + batched OCR; no LLM calls
+- **OCR**: Surya on MPS/GPU, `_ocr_batched(batch_size=16)`, **~16 min** end-to-end, 7 batches, zero thermal throttling
+- **Output**: 5,411 lines (30% shorter than the original 7,118-line uncropped run — browser chrome removed). Split into 4 clean directories: `010_preface`, `020_conclusion_what_future_for_a_development_policy`, `030_bibliography`, `040_index`. Index linked with 293 hyperlinks.
+- **Remaining quality gap**: Morocco's 4 real body chapters have no regex-detectable markers; they live as a ~4000-line blob inside `010_preface/`. Fixable only with LLM page-number detection or manual `ChapterDef` list.
+- **Full history** (bugs, thermal issues, A/B tests, MPS setup, chapter splitter hardening): see [`morocco_processing_notes.md`](./morocco_processing_notes.md)
 
 ## Known Limitations
 

@@ -217,6 +217,87 @@ class TestDetectChapters:
         # PART should still appear as intro section
         assert any("Part 1" in t for t in titles)
 
+    def test_named_section_not_duplicated_on_running_header(self):
+        """Running headers ('Preface' at every page top) should yield one chapter."""
+        lines = _lines("""
+            # Title
+
+            Contents
+            <b>Preface</b>
+
+            <b>Preface</b>
+            First paragraph of the real preface.
+            More preface body text.
+
+            <b>Preface</b>
+            Second page of the preface, running header repeats.
+            Still preface content.
+
+            <b>Preface</b>
+            Third page of the preface, running header again.
+            Final preface text.
+
+            Bibliography
+            First bibliography line.
+
+            Bibliography
+            Running header repeats on next bibliography page.
+            Another ref.
+        """)
+        chapters = detect_chapters(lines)
+        titles = [c.title for c in chapters]
+        # Only one Preface chapter and one Bibliography chapter
+        assert titles.count("Preface") == 1
+        assert titles.count("Bibliography") == 1
+
+    def test_titled_section_rejects_mid_paragraph_match(self):
+        """Long lines starting with 'conclusion' mid-paragraph must not be detected."""
+        noise = (
+            'conclusion of the analysis was that "Today, the fear '
+            "(remember when we did not dare speak in front of a neighbour "
+            "for fear that he was a secret agent) has ceded its place to"
+        )
+        lines = _lines(f"""
+            # Title
+
+            Contents
+            <b>Preface</b>
+
+            <b>Preface</b>
+            Body of preface.
+
+            {noise}
+            next paragraph continues with regular body text.
+
+            CONCLUSION. The Real Conclusion
+            Actual conclusion body.
+        """)
+        chapters = detect_chapters(lines)
+        conclusion_chapters = [c for c in chapters if "Conclusion" in c.title]
+        # The mid-paragraph noise should not produce a chapter;
+        # the real CONCLUSION. line should.
+        assert len(conclusion_chapters) == 1
+        assert "Real Conclusion" in conclusion_chapters[0].title
+
+    def test_titled_section_accepts_short_header(self):
+        """A plain short 'CONCLUSION. Title' line should still be detected."""
+        lines = _lines("""
+            # Title
+
+            Contents
+            <b>Preface</b>
+
+            <b>Preface</b>
+            Body.
+
+            CONCLUSION. The Future of Archaeology
+            Conclusion body text.
+        """)
+        chapters = detect_chapters(lines)
+        conclusion = [c for c in chapters if "Conclusion" in c.title]
+        assert len(conclusion) == 1
+        assert "Future of Archaeology" in conclusion[0].title
+
     def test_artifact_level_false_keeps_parts(self):
         lines = _lines("""
             Contents
