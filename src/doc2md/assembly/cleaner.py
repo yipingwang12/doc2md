@@ -34,6 +34,36 @@ def normalize_ligatures(text: str) -> str:
     text = _PUA_RE.sub(_replace_pua, text)
     for ctrl, replacement in _CONTROL_CHAR_MAP.items():
         text = text.replace(ctrl, replacement)
+    text = normalize_transliteration(text)
+    return text
+
+
+# Cambridge UP PDFs encode Arabic/Islamic transliteration diacritics using
+# standalone characters instead of Unicode combining marks:
+#   U+00AF (¯) instead of combining macron U+0304
+#   U+002E (.) as dot-below U+0323 before vowels in Arabic names
+#   U+0131 (ı) dotless-i often follows a macron, producing ¯ı instead of ī
+
+# Standalone macron between a letter and a vowel: the macron marks the
+# following vowel as long (e.g. b¯a → bā).  Capture the next char so we
+# can emit it + combining macron in the right order.
+_MACRON_RE = re.compile(r"\u00af([A-Za-z\u0131])(?=[A-Za-z\u0131\s,\u02be\u02bf()\u2019]|$)")
+
+# Period used as dot-below: letter + . + vowel/macron (Arabic: Ḥ Ṭ Ṣ Ḍ Ẓ)
+_DOT_BELOW_RE = re.compile(r"(?<=[A-Za-z])\.(?=[\u00af\u0131a-z])")
+
+
+def normalize_transliteration(text: str) -> str:
+    """Fix PDF-extracted Arabic/Islamic transliteration diacritics.
+
+    Converts standalone macron (U+00AF) to combining macron (U+0304) on the
+    following vowel, period-as-dot-below to combining dot below (U+0323),
+    and dotless-i (U+0131) to regular i after combining macron (→ ī).
+    """
+    text = _DOT_BELOW_RE.sub("\u0323", text)
+    text = _MACRON_RE.sub(lambda m: m.group(1) + "\u0304", text)
+    # dotless-i with combining macron → ī
+    text = text.replace("\u0131\u0304", "\u012b")
     return text
 
 

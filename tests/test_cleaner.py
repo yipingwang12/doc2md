@@ -106,6 +106,39 @@ class TestNormalizeLigatures:
         text = "ﬁnd chapter \uF732\uF737"
         assert normalize_ligatures(text) == "find chapter 27"
 
+    def test_macron_between_letters(self):
+        """Standalone macron U+00AF → combining macron on following vowel."""
+        assert normalize_ligatures("Ab\u00afu") == "Abu\u0304"
+
+    def test_macron_abbasid(self):
+        """Real case: ʿAbb¯asid → ʿAbbāsid."""
+        assert normalize_ligatures("\u02bfAbb\u00afasid") == "\u02bfAbba\u0304sid"
+
+    def test_macron_dotless_i(self):
+        """Macron + dotless-i (¯ı) → ī."""
+        assert normalize_ligatures("Al\u00af\u0131") == "Al\u012b"
+
+    def test_dot_below_before_macron(self):
+        """Period as dot-below before macron: t.¯ı → ṭī."""
+        assert normalize_ligatures("Lat.\u00af\u0131f") == "Lat\u0323\u012bf"
+
+    def test_dot_below_before_vowel(self):
+        """Period as dot-below before lowercase vowel: .a → combining dot below + a."""
+        assert normalize_ligatures("Ah.mad") == "Ah\u0323mad"
+
+    def test_dot_below_not_sentence_period(self):
+        """Period at end of word is NOT a dot-below."""
+        assert normalize_ligatures("end. Next") == "end. Next"
+
+    def test_macron_not_at_word_boundary(self):
+        """Standalone macron not between letters is unchanged."""
+        assert normalize_ligatures("foo \u00af bar") == "foo \u00af bar"
+
+    def test_transliteration_full_name(self):
+        """Real case: Ab¯u Zakar¯ıy¯aʾ → Abū Zakarīyāʾ."""
+        result = normalize_ligatures("Ab\u00afu Zakar\u00af\u0131y\u00afa\u02be")
+        assert result == "Abu\u0304 Zakar\u012bya\u0304\u02be"
+
 
 class TestFixHyphenation:
     def test_joins_hyphenated_word(self):
