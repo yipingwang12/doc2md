@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
+from doc2md.extract.ocr_engines import SuryaEngine
 from doc2md.extract.screenshot_extract import (
     _split_image,
     extract_screenshot_spread,
@@ -136,7 +137,7 @@ class TestPageOrdering:
 
         mock_predictors.return_value = (MagicMock(side_effect=mock_rec), mock_det)
 
-        pages = extract_screenshot_spread(tmp_path)
+        pages = extract_screenshot_spread(tmp_path, engine=SuryaEngine())
 
         assert len(pages) == 4
         assert pages[0].page_number == 1
@@ -173,7 +174,7 @@ class TestImageOnlySkip:
 
         mock_predictors.return_value = (MagicMock(side_effect=mock_rec), mock_det)
 
-        pages = extract_screenshot_spread(tmp_path)
+        pages = extract_screenshot_spread(tmp_path, engine=SuryaEngine())
 
         assert len(pages) == 2
         assert pages[0].raw_text == ""  # skipped (image-only)

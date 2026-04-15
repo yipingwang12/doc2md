@@ -109,6 +109,57 @@ For digital PDFs, `analysis/segmenter.py` uses PyMuPDF block dicts with font met
 
 For OCR pages (no block dicts), falls back to raw text heuristics: blank-line paragraph splitting, regex patterns for headings/footnotes/captions.
 
+## OCR Engine Cascade
+
+Screenshot and scanned-PDF extraction goes through a pluggable engine abstraction at `src/doc2md/extract/ocr_engines/`. Every engine implements the same `OcrEngine` protocol:
+
+```python
+class OcrEngine(Protocol):
+    name: str
+    def ocr_batch(
+        self,
+        items: list[tuple[Image.Image, Path]],
+        *,
+        auto_number: bool = False,
+    ) -> list[OcrResult]: ...
+```
+
+`OcrResult` wraps the existing `Page` model with a `confidence: float` (0..1 mean per-line confidence, engine-specific scale) and a `line_count: int`. The quality signals let downstream code decide whether a page's OCR is good enough to keep.
+
+### Available engines
+
+| Engine | File | Strengths | Weaknesses | Dep |
+|---|---|---|---|---|
+| `TesseractEngine` | `ocr_engines/tesseract.py` | Fastest on CPU (~0.2 sec/half-page on Boston); lightest thermal footprint; good on clean English | Poor on math, non-Latin scripts, complex layouts; no block metadata | `pytesseract` + `tesseract` binary |
+| `AppleVisionEngine` | `ocr_engines/apple_vision.py` | Fast on Apple Silicon Neural Engine; no GPU contention; handles layout automatically | macOS only; weaker on math/unusual fonts | `ocrmac` (macOS only) |
+| `SuryaEngine` | `ocr_engines/surya.py` | Most capable on math, non-Latin scripts, unusual layouts; provides rich block metadata that powers font-based classification | Slowest; thermal-stress under sustained CPU load; best with GPU/MPS | `surya-ocr` (core dep) |
+| `CascadeEngine` | `ocr_engines/cascade.py` | Runs multiple engines in order with per-page quality gating — only escalates to the next engine on pages that fail the check | — | n/a |
+
+### Default cascade
+
+`build_default_cascade(folder=None)` builds a **Tesseract → Apple Vision → Surya** cascade, dynamically including only the stages whose Python dependency is importable. Surya is always the final unconditional fallback (it's a core dep). Column preprocessing (from `chrome_cropper.detect_column_bounds()`) is applied to Tesseract and Apple Vision stages when the folder has multi-column layout; Surya runs on full content pages.
+
+```python
+CascadeEngine([
+    (TesseractEngine(columns=cols, lang="eng"), default_quality_check),
+    (AppleVisionEngine(columns=cols), default_quality_check),
+    (SuryaEngine(), None),  # final stage, accepted unconditionally
+])
+```
+
+### Per-page quality check
+
+`default_quality_check()` rejects a result (triggering fallback to the next stage) if:
+1. Mean confidence < `min_confidence` (default 0.60)
+2. Line count < `min_lines` (default 3)
+3. Non-printable character ratio > 0.30
+
+Each stage runs on all items first, then the cascade re-runs failed items through the next stage. Page numbering (`auto_number=True`) is applied at the very end so page numbers stay sequential regardless of which engine produced each page.
+
+### Wiring
+
+`extract_screenshots(folder)` and `extract_screenshot_spread(folder)` default to `build_default_cascade(folder)` and `build_default_cascade()` respectively (the latter skips column detection because Libby spread halves are already single-column). Both accept an optional `engine` kwarg so tests and benchmarks can bypass the cascade with a bare `SuryaEngine()` or a mock.
+
 ## Output Format
 
 Each document produces a directory under `output_dir` containing one `.md` file per chapter:
@@ -131,18 +182,27 @@ Each chapter file contains:
 
 ## Dependencies
 
+### Core (required)
+
 - Python ≥ 3.11
 - PyMuPDF ≥ 1.24 — PDF text extraction and page rendering
-- surya-ocr ≥ 0.17 — OCR for screenshots/scanned pages
+- surya-ocr ≥ 0.17 — OCR for screenshots/scanned pages (always-available cascade fallback)
 - transformers ≥ 4.50, < 5 — pinned for Surya compatibility
 - click ≥ 8.0 — CLI framework
 - requests ≥ 2.31 — Ollama HTTP client
 - rclone (external) — Google Drive sync
 - Ollama (external) — local LLM inference server
 
+### Optional OCR cascade (`pip install doc2md[cascade]`)
+
+- pytesseract ≥ 0.3.10 + `tesseract` binary — Tesseract engine (cross-platform, CPU-bound, fastest primary stage for clean English)
+- ocrmac ≥ 1.0 (darwin only) — Apple Vision engine via `VNRecognizeTextRequest` (Neural Engine, avoids GPU thermal contention)
+
+Cascade stages missing their Python dependency are silently skipped at runtime; Surya always stays as the final fallback. The cascade is the default for screenshot folders but can be bypassed by passing `engine=SuryaEngine()` explicitly.
+
 ## Quality
 
-- 405+ tests, ~86% coverage
+- 506+ tests, ~90% coverage
 - Every module has a corresponding test file
 - Comprehensive integration tests covering real-world academic PDF patterns
 - Dev deps: pytest, pytest-cov, responses (HTTP mocking), playwright (e2e)
@@ -164,6 +224,17 @@ Each chapter file contains:
 - **Post-processing**: manual `split_markdown()` with explicit `ChapterDef` list (4 sections: front matter, story, afterword, publisher info); auto-detection catches `Afterword: Snow` via `_TITLED_SECTION_RE`
 - **No index** in source
 
+### A History of Boston in 50 Artifacts (Joseph M. Bagley)
+
+- **Source**: 209 Libby landscape spread screenshots (3024×1642 each, 418 half-pages after midpoint split)
+- **Original run** (Surya-only, CPU): 23 min OCR, 59 clean chapter directories, 85% index link rate (1,666 links). See archived output under `results/boston_artifacts/` and backup `results_archive/boston_artifacts_2026-04-15/`.
+- **Cascade run** (Tesseract → Apple Vision → Surya, MPS enabled): **~7 min** wall-clock (~2.5× faster). Tesseract and Apple Vision handled nearly all pages; Surya only recognized ~9 text lines across 2 small fallback batches. Output at `results/a_history_of_boston_in_50_artifacts/chapter_01_untitled.md` (6303 lines vs 6158 for the original — within 2.5%).
+- **Observed quality deltas vs the original**:
+  1. **Title detection regression** — original: `# A HISTORY` / `### OF BOSTON`; cascade: `# Untitled`. Root cause: Surya's `RecognitionPredictor` supplies block metadata (font name, size, bbox) that `analysis/segmenter.py` uses to classify title-styled headings. Tesseract and Apple Vision don't expose that metadata, so pages they successfully handle fall through to the raw-text classifier, which doesn't recognize ALL-CAPS title spans.
+  2. **More raw OCR noise on image-heavy pages** — cover and copyright pages show strings like `Ziwi2` / `@ut-q` / `iv &@h OA` in the cascade output. Surya has a built-in `MIN_BBOXES=3` gate that silently skips image-only pages; Tesseract and Apple Vision run on everything and produce garbled output on graphic regions.
+  3. **Image-only pages cascade through all three engines** — `default_quality_check(min_lines=3)` rejects Tesseract results with zero or one line, so genuine image-only pages (e.g. the cover) get re-tried by Apple Vision, then Surya, before the final Surya result (empty) is accepted. Wastes a few seconds per image-only page but does not affect correctness.
+- **Safety**: the original `results/boston_artifacts/` split is untouched; the cascade writes to a different directory because `doc_name` comes from `path.name` (`a_history_of_boston_in_50_artifacts`) rather than the custom-named `boston_artifacts` folder.
+
 ### Morocco: Globalization and Its Consequences (Cohen & Jaidi)
 
 - **Source**: 103 browser screenshots (1366×768, full-screen captures of VBooks web viewer with Ubuntu panel + Chrome tabs + dock visible), 38 MB
@@ -180,6 +251,53 @@ Each chapter file contains:
 - **Page break gaps** — 19 sentences across 2.97M words have a blank line at a page boundary; fixing requires cross-page sentence analysis for negligible reader impact
 - **Duplicate source files** — zip downloads from Cambridge Core sometimes contain duplicate PDFs; `build_library.py` deduplicates by SHA-256 content hash; section divider PDFs (Part titles) are filtered
 - **PDF control char encoding** — Cambridge UP PDFs encode Semitic transliteration characters (ayin ʿ, alef ʾ) as ASCII control codes U+0002/U+0003; cleaner maps these to Unicode modifier letters U+02BF/U+02BE
+- **Cascade image-only page over-escalation** — pages with no real text currently fail Tesseract's `min_lines=3` check and cascade through Apple Vision → Surya before finally accepting the empty result. Wastes a few seconds per image-only page; doesn't affect correctness
+- **Cascade title-detection regression** — Tesseract and Apple Vision don't provide font metadata (block dicts), so their pages bypass `analysis/segmenter.py`'s font-based title/heading classification. Pages that would have been classified as headings via font size/name in a Surya-only run fall through to raw-text heuristics in the cascade run
+
+## Future Work: OCR Cascade
+
+The cascade is functional end-to-end and already delivers a ~2.5× speedup on Boston, but several quality and performance improvements are identified and not yet implemented. Each is a self-contained follow-up.
+
+### 1. Fix image-only page over-escalation
+
+Update `default_quality_check()` to accept empty Tesseract results as "no text found" rather than "engine failed":
+
+```python
+if not result.page.raw_text:
+    return True  # empty result = image-only page, accept
+```
+
+Combined with Tesseract's already-fast 0.2 sec/half-page, this should cut Boston's cascade runtime further because most image-only pages (covers, artifact photos, figure-only pages) will short-circuit at stage 1. Trade-off: the rule assumes Tesseract's OCR signal is reliable enough to distinguish "genuinely no text" from "text Tesseract couldn't read"; that's plausibly true for clean printed books but worth validating.
+
+### 2. Preserve Surya block metadata for classification
+
+When a page is handled by Surya (either as a primary or fallback stage), its `rec_results[j].text_lines[k]` includes bbox and per-line confidence but doesn't currently feed `page.block_dicts`. Populating `block_dicts` from Surya's output would restore font-based classification for Surya-handled pages. For Tesseract/Apple Vision pages, the fix is harder — neither engine exposes font metadata cheaply. Options:
+
+- **Accept the regression**: cascade-handled pages use raw-text heuristics; font-based classification only works when Surya is primary.
+- **Detect headings statistically**: compute per-line height in the OCR output (all engines expose bboxes). Lines whose height is >1.2× the median body line height are likely headings. Tractable without engine-specific metadata.
+- **Run Surya just for layout**: on every page, run Surya's cheaper `det_predictor` to get bbox sizes, then use a faster engine for recognition. Gives up some of the cascade speedup but preserves layout quality.
+
+### 3. Calibrate confidence thresholds per engine
+
+`default_quality_check(min_confidence=0.60)` uses the same threshold for all engines. Tesseract, Apple Vision, and Surya have different confidence distributions — Tesseract tends to report 70-95 for clean English, Apple Vision 0.85-0.99, Surya 0.90-0.99. A single 0.60 floor means the cascade under-utilizes Tesseract's discrimination. Per-engine thresholds calibrated on a labeled sample (e.g. 100 Boston pages with known correct output) would tighten the cascade.
+
+### 4. Engine-specific column preprocessing defaults
+
+Currently `build_default_cascade(folder)` runs `detect_column_bounds()` once and passes the same column list to both Tesseract and Apple Vision. Apple Vision handles multi-column layouts better than Tesseract (its built-in layout analysis is reasonable), so passing columns to Apple Vision may actually hurt accuracy by forcing it to process pre-split strips. Worth measuring; could skip column preprocessing for Apple Vision while keeping it for Tesseract.
+
+### 5. Cache OCR output by content hash
+
+The pipeline's cache currently records "extract" as a stage flag without storing the per-page text. Reprocessing a book re-runs OCR on every page even when the source screenshots are unchanged. Adding a per-image hash → cached `OcrResult` table would let iterative tuning (adjusting thresholds, re-running chapter splitter) happen without repeating the expensive OCR step. For Boston that means 7 min → <10 sec on reruns.
+
+### 6. Cross-engine benchmark on a representative book set
+
+Run the cascade on one book from each major category and record:
+- Per-engine invocation counts (how many pages handled by each stage)
+- Wall-clock time per stage
+- A manual accuracy spot-check on 20 random pages per book
+- Thermal behavior (pmset thermlog)
+
+Candidate books: Boston (image-heavy Libby spreads), Morocco (text-heavy browser screenshots), Cambridge vol 1 (Arabic transliteration, math, non-Latin scripts), Wood at Midwinter (short story, clean single-column). This gives concrete evidence for tuning the default cascade configuration and for deciding which engines to offer out of the box.
 
 ## E-Book Reader (Implemented)
 

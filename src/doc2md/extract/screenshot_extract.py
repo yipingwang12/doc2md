@@ -10,9 +10,14 @@ from pathlib import Path
 
 from PIL import Image
 
+from typing import TYPE_CHECKING
+
 from doc2md.extract.chrome_cropper import detect_content_bounds
-from doc2md.extract.ocr_extract import _get_image_files, _ocr_batched
+from doc2md.extract.ocr_extract import _get_image_files
 from doc2md.models import Page
+
+if TYPE_CHECKING:
+    from doc2md.extract.ocr_engines.base import OcrEngine
 
 
 def is_libby_spread(folder: Path) -> bool:
@@ -63,15 +68,25 @@ def is_browser_screenshot(folder: Path) -> bool:
     return detect_content_bounds(image_files) is not None
 
 
-def extract_screenshot_spread(folder: Path) -> list[Page]:
+def extract_screenshot_spread(
+    folder: Path,
+    *,
+    engine: "OcrEngine | None" = None,
+) -> list[Page]:
     """Extract text from Libby two-page spread screenshots.
 
-    Splits each image at midpoint, batches halves for OCR,
-    skips image-only pages, returns pages in reading order.
+    Splits each image at midpoint, batches halves through the OCR
+    engine, skips image-only pages, returns pages in reading order.
+    Defaults to the Tesseract → Apple Vision → Surya cascade without
+    column preprocessing (half-images are already single-column).
     """
     image_files = _get_image_files(folder)
     halves = _split_all(image_files)
-    return _ocr_batched(halves, auto_number=True)
+    if engine is None:
+        from doc2md.extract.ocr_engines import build_default_cascade
+        engine = build_default_cascade()  # no folder → no column detection
+    results = engine.ocr_batch(halves, auto_number=True)
+    return [r.page for r in results]
 
 
 def _split_image(image_path: Path) -> list[tuple[Image.Image, Path]]:

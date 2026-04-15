@@ -20,6 +20,13 @@ dev = [
     "pytest-cov>=4.0",
     "responses>=0.25",
 ]
+# Optional OCR engines for the cascade pipeline. Install one or both to
+# enable the Tesseract → Apple Vision → Surya cascade. Surya is always
+# available because it's in the core `dependencies` above.
+cascade = [
+    "pytesseract>=0.3.10",
+    "ocrmac>=1.0; sys_platform == 'darwin'",
+]
 
 [project.scripts]
 doc2md = "doc2md.cli:main"

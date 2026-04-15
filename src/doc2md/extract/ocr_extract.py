@@ -1,15 +1,24 @@
-"""Extract text from images/scanned PDFs using Surya OCR."""
+"""Extract text from images/scanned PDFs using a pluggable OCR engine.
+
+The default engine is `SuryaEngine`. `extract_screenshots()` accepts
+an optional `engine` kwarg so callers can pass a different engine (or
+a cascade of engines) without touching this module.
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PIL import Image
 from surya.recognition import DetectionPredictor, FoundationPredictor, RecognitionPredictor
 
 from doc2md.extract.chrome_cropper import crop_image, detect_content_bounds
 from doc2md.models import Page
+
+if TYPE_CHECKING:
+    from doc2md.extract.ocr_engines.base import OcrEngine
 
 logger = logging.getLogger(__name__)
 
@@ -57,62 +66,17 @@ def ocr_image(image_path: Path) -> str:
     return _ocr_pil(image)
 
 
-def _ocr_batched(
-    items: list[tuple[Image.Image, Path]],
+def extract_screenshots(
+    folder: Path,
     *,
     auto_number: bool = False,
+    engine: "OcrEngine | None" = None,
 ) -> list[Page]:
-    """Run batched OCR with image-only page skipping.
+    """Extract text from all images in a folder using an OCR engine.
 
-    Each item is (pil_image, source_path). Pages with fewer than
-    MIN_BBOXES detected text regions get empty text (image-only).
-    When auto_number=True, pages get sequential page_number values.
-    """
-    rec_predictor, det_predictor = _get_predictors()
-    pages: list[Page] = []
-    page_num = 1
-
-    for batch_start in range(0, len(items), BATCH_SIZE):
-        batch = items[batch_start:batch_start + BATCH_SIZE]
-        images = [item[0] for item in batch]
-        sources = [item[1] for item in batch]
-
-        # Detection pass to find image-only pages
-        det_results = det_predictor(images)
-        to_recognize = []
-        to_recognize_idx = []
-        for i, det in enumerate(det_results):
-            if len(det.bboxes) >= MIN_BBOXES:
-                to_recognize.append(images[i])
-                to_recognize_idx.append(i)
-
-        # Recognition pass on text pages only
-        rec_texts: dict[int, str] = {}
-        if to_recognize:
-            rec_results = rec_predictor(to_recognize, det_predictor=det_predictor)
-            for j, idx in enumerate(to_recognize_idx):
-                lines = [line.text for line in rec_results[j].text_lines]
-                rec_texts[idx] = "\n".join(lines)
-
-        for i in range(len(batch)):
-            text = rec_texts.get(i, "")
-            pages.append(Page(
-                source_path=sources[i],
-                raw_text=text,
-                extraction_method="surya",
-                page_number=page_num if auto_number else None,
-            ))
-            if auto_number:
-                page_num += 1
-
-    return pages
-
-
-def extract_screenshots(folder: Path, *, auto_number: bool = False) -> list[Page]:
-    """Extract text from all images in a folder via batched OCR.
-
-    Detects and crops browser chrome before OCR. Skips image-only pages.
-    When auto_number=True, pages get sequential page numbers.
+    Detects and crops browser chrome before OCR. When `auto_number=True`,
+    pages get sequential page numbers. Defaults to `SuryaEngine` if no
+    engine is passed.
     """
     image_files = _get_image_files(folder)
     bounds = detect_content_bounds(image_files)
@@ -133,7 +97,12 @@ def extract_screenshots(folder: Path, *, auto_number: bool = False) -> list[Page
                 extraction_method="surya_failed",
             ))
 
-    pages = _ocr_batched(items, auto_number=auto_number)
+    if engine is None:
+        from doc2md.extract.ocr_engines import build_default_cascade
+        engine = build_default_cascade(folder)
+
+    results = engine.ocr_batch(items, auto_number=auto_number)
+    pages = [r.page for r in results]
     pages.extend(failed)
     pages.sort(key=lambda p: p.source_path)
     return pages
