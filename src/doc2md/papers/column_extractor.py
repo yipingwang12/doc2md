@@ -92,13 +92,13 @@ def reorder_blocks_two_column(blocks: list[dict], split_x: float) -> list[dict]:
         if x0 < split_x and x1 > split_x:
             full_width.append((i, b))
         elif x1 <= split_x:
-            left_col.append((y0, b))
+            left_col.append((y0, i, b))
         else:
-            right_col.append((y0, b))
+            right_col.append((y0, i, b))
 
     ordered = [b for _, b in sorted(full_width, key=lambda t: t[0])]
-    ordered += [b for _, b in sorted(left_col)]
-    ordered += [b for _, b in sorted(right_col)]
+    ordered += [b for _, _, b in sorted(left_col)]
+    ordered += [b for _, _, b in sorted(right_col)]
 
     # Re-insert non-text blocks at their original relative positions
     for orig_idx, nb in sorted(non_text):

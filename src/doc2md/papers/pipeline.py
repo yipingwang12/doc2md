@@ -71,12 +71,15 @@ def _run_ner(
 
     pubtator_entities: list[NamedEntity] = []
     if paper_doc.metadata.pmid:
-        pubtator_entities = fetch_entities_by_pmid(
-            paper_doc.metadata.pmid,
-            base_url=pcfg.base_url,
-            rate_delay=pcfg.rate_limit_delay,
-        )
-        logger.info("PubTator: %d entities for PMID %s", len(pubtator_entities), paper_doc.metadata.pmid)
+        try:
+            pubtator_entities = fetch_entities_by_pmid(
+                paper_doc.metadata.pmid,
+                base_url=pcfg.base_url,
+                rate_delay=pcfg.rate_limit_delay,
+            )
+            logger.info("PubTator: %d entities for PMID %s", len(pubtator_entities), paper_doc.metadata.pmid)
+        except requests.RequestException as exc:
+            logger.warning("PubTator failed for PMID %s (%s); falling back to BERN2 for all sections", paper_doc.metadata.pmid, exc)
 
     # Sections handled by BERN2: everything not covered by PubTator abstract lookup
     bern2_sections = {label for _, label in labelled_blocks
@@ -89,13 +92,16 @@ def _run_ner(
         ).strip()
         if not section_text:
             continue
-        section_entities = annotate_text(
-            section_text,
-            section_label=section_label,
-            base_url=bcfg.base_url,
-            timeout=bcfg.timeout,
-        )
-        bern2_entities.extend(section_entities)
+        try:
+            section_entities = annotate_text(
+                section_text,
+                section_label=section_label,
+                base_url=bcfg.base_url,
+                timeout=bcfg.timeout,
+            )
+            bern2_entities.extend(section_entities)
+        except requests.RequestException as exc:
+            logger.warning("BERN2 failed for section '%s' (%s); skipping NER for this section", section_label, exc)
 
     merged = merge_entity_sources(pubtator_entities, bern2_entities)
     return deduplicate_entities(merged)

@@ -41,7 +41,7 @@ class ProcessingConfig:
 
 @dataclass
 class PubTatorConfig:
-    base_url: str = "https://api.ncbi.nlm.nih.gov/lit/pubtator3"
+    base_url: str = "https://www.ncbi.nlm.nih.gov/research/pubtator3-api"
     rate_limit_delay: float = 0.34  # ~3 req/s NCBI limit
     pubtator_sections: list[str] = field(default_factory=lambda: ["abstract"])
 
