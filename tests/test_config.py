@@ -34,3 +34,37 @@ class TestLoadConfig:
         config_file.write_text('[llm]\nmodel = "test"\nunknown_key = "val"\n')
         config = load_config(config_file)
         assert config.llm.model == "test"
+
+
+class TestPapersConfig:
+    def test_defaults(self):
+        config = load_config(None)
+        assert config.papers.papers_dir == "./results/papers"
+        assert "gene" in config.papers.entity_types
+        assert config.papers.pubtator.rate_limit_delay == 0.34
+        assert config.papers.bern2.timeout == 60
+
+    def test_papers_section_loaded(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""
+[papers]
+papers_dir = "./results/my_papers"
+
+[papers.pubtator]
+rate_limit_delay = 0.5
+
+[papers.bern2]
+base_url = "http://localhost:8888"
+timeout = 120
+""")
+        config = load_config(config_file)
+        assert config.papers.papers_dir == "./results/my_papers"
+        assert config.papers.pubtator.rate_limit_delay == 0.5
+        assert config.papers.bern2.base_url == "http://localhost:8888"
+        assert config.papers.bern2.timeout == 120
+
+    def test_entity_types_configurable(self, tmp_path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[papers]\nentity_types = ["gene", "disease"]\n')
+        config = load_config(config_file)
+        assert config.papers.entity_types == ["gene", "disease"]

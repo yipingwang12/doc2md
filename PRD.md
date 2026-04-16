@@ -508,6 +508,54 @@ Embed paragraphs with a local model, index in FAISS, run coreference resolution 
 
 GraphRAG requires LLM calls for every chunk during indexing — expensive on a 3M-word corpus. Phases 1–3 get 90% of value with minimal compute. GraphRAG would add value for complex multi-hop queries but can wait until simpler phases prove insufficient.
 
+## Academic Paper Pipeline — Research Findings
+
+Feature goal: ingest academic PDFs (e.g. Cell journal), convert to structured markdown, run biomedical entity recognition, and generate a cross-paper entity index.
+
+### PDF extraction
+
+**PyMuPDF remains the right tool for digital PDFs.** Cell papers are born-digital; PyMuPDF extracts text directly from PDF objects at ~0.12 sec/page with perfect fidelity. Marker and MinerU were evaluated as alternatives: both are 10–90× slower on digital PDFs (Marker uses PyMuPDF internally as its first step), and both show documented regressions on two-column journal layouts. Scanned content already has the Surya cascade. No change to the extraction layer is needed.
+
+**Two-column layout**: PyMuPDF's `get_text("dict")` reads blocks in document order, which for two-column PDFs may interleave columns. Mitigation: use `sort=True` in `get_text()` to get spatial reading order, or detect column bounds via `chrome_cropper.detect_column_bounds()` (already implemented).
+
+**GROBID** (not adopted) would add structured metadata extraction (authors, DOI, section headers in TEI/XML) but outputs XML rather than readable markdown, requires a running server, and is slower. Worth revisiting if reliable metadata extraction proves difficult with heuristics.
+
+### NotebookLM evaluation
+
+Evaluated and **rejected for this use case**. NotebookLM is a RAG chat interface: it answers questions across uploaded PDFs but cannot systematically extract entities, produces no machine-readable output (copy-paste only), and has no export beyond Google Sheets via the manual Data Tables feature. Hallucination rate ~13% makes it unsuitable for a structured index. No documented use case of systematic entity extraction from a paper corpus exists.
+
+### Biomedical NER: PubTator 3.0 + BERN2 cascade
+
+Two complementary tools; use in cascade:
+
+**PubTator 3.0** (primary): NCBI's pre-computed annotation service covering 36M PubMed abstracts + 6M PMC full-text articles, updated weekly. Query by PMID → returns structured JSON/BioC with normalized entity IDs (NCBI Gene IDs, MeSH terms). ~67 seconds for 200 papers at the 3 req/sec rate limit. Entity types: genes, diseases, chemicals, variants, species, cell lines. F1: genes 84.6, variants 98.5, species 95.2. Nearly all Cell papers are PMC-indexed, so annotations are pre-computed. Known weakness: low precision in methods sections (complex protocols, abbreviations).
+
+**BERN2** (fallback): processes arbitrary text via HTTP API or local install; ~55 min for 200 papers via API (use local install for bulk). Better than PubTator on diseases (F1 88.6 vs 79.2) and chemicals (92.8 vs 81.9). Covers 9 entity types vs PubTator's 6 (adds cell types, DNA/RNA). Use for papers not in PMC or to supplement PubTator on entity types it undershoots.
+
+Neither tool handles experimental methods (CRISPR, ChIP-seq, etc.) well — this class of entity requires custom extraction (regex + Ollama).
+
+### Cross-paper entity index
+
+Once entities are normalized to canonical IDs (NCBI Gene ID, MeSH CUI), cross-paper indexing is a **simple inverted index**: `{entity_id → [{paper, section, context}]}`. Normalization — the hard part — is already done by PubTator/BERN2. Implementation is ~1–2 weeks of Python/SQLite. Phase 1 output: `entity_index.json` + `entity_index.md` per corpus.
+
+**GraphRAG and LlamaIndex KnowledgeGraphIndex** were evaluated. Both add *relationship extraction* (subject-verb-object triples via LLM calls), not entity identification. GraphRAG costs ~$10–20 in LLM API calls for 200 papers and adds 3–4 weeks of engineering. The payoff is multi-hop relational queries ("genes that activate a protein in Cell Line X") vs. co-occurrence queries ("papers mentioning Gene X"). For Phase 1 the simple inverted index covers the stated need; graph extraction is a natural Phase 2.
+
+### Proposed pipeline
+
+```
+PDF → PyMuPDF extract → clean/segment (paper sections) → PMID lookup → PubTator annotations
+                                                        ↘ (not in PMC) → BERN2 on raw text
+→ merge + normalize entities → inverted index → entity_index.json + entity_index.md
+```
+
+### Planned CLI additions
+
+```
+doc2md papers process <pdf>          # extract + segment + write paper.md
+doc2md papers build-index            # PubTator/BERN2 NER → entity_index
+doc2md papers search-entity <name>   # query entity index
+```
+
 ## Non-Goals (Current Scope)
 
 - Cloud LLM support (currently Ollama-only)
