@@ -176,16 +176,33 @@ def _split_footnote_block(block: dict) -> list[tuple[str, str]]:
 
 _PAGE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _URL_RE = re.compile(r"https?://\S+")
+_PREPRINT_WATERMARK_RES = [
+    re.compile(r"CC-BY\s+\d", re.IGNORECASE),
+    re.compile(r"not certified by peer review", re.IGNORECASE),
+    re.compile(r"bioRxiv\b", re.IGNORECASE),
+    re.compile(r"medrxiv\b", re.IGNORECASE),
+    re.compile(r"The copyright holder for this preprint", re.IGNORECASE),
+    re.compile(r"author/funder", re.IGNORECASE),
+    re.compile(r"perpetuity\b", re.IGNORECASE),
+]
+_FIGURE_PANEL_RE = re.compile(r"^([A-Za-z]|\d{1,3}/\d{1,3})$")
 
 
 def _is_boilerplate(text: str) -> bool:
-    """Check if text is a page number, URL, or other boilerplate."""
+    """Check if text is a page number, URL, preprint watermark, or other boilerplate."""
     stripped = text.strip()
     if _PAGE_NUM_RE.match(stripped):
         return True
     if _URL_RE.search(stripped) and len(stripped) < 150:
         return True
+    if any(pat.search(stripped) for pat in _PREPRINT_WATERMARK_RES):
+        return True
     return False
+
+
+def _is_figure_panel_label(text: str) -> bool:
+    """Return True if text is a figure panel label (single letter or N/M fraction)."""
+    return bool(_FIGURE_PANEL_RE.match(text.strip()))
 
 
 def _is_all_caps_heading(text: str) -> bool:
@@ -284,6 +301,8 @@ def _classify_block(
 
     # Heading: larger font than body text
     if dom_size > profile.body_size + 1.0 and len(text) < 200:
+        if _is_figure_panel_label(text):
+            return []
         level = 1
         if profile.heading_sizes:
             for i, hs in enumerate(profile.heading_sizes):

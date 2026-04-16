@@ -89,6 +89,37 @@ def detect_repeated_lines(pages: list[Page], min_occurrences: int = 3, check_lin
 
 _PAGE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _URL_RE = re.compile(r"https?://\S+")
+_PREPRINT_WATERMARK_RES = [
+    re.compile(r"CC-BY\s+\d", re.IGNORECASE),
+    re.compile(r"not certified by peer review", re.IGNORECASE),
+    re.compile(r"bioRxiv\b", re.IGNORECASE),
+    re.compile(r"medrxiv\b", re.IGNORECASE),
+    re.compile(r"The copyright holder for this preprint", re.IGNORECASE),
+    re.compile(r"author/funder", re.IGNORECASE),
+    re.compile(r"perpetuity\b", re.IGNORECASE),
+    re.compile(r"^\s*[.;]\s*$"),  # standalone punctuation artifacts
+]
+
+
+def _is_watermark_line(line: str) -> bool:
+    return any(pat.search(line) for pat in _PREPRINT_WATERMARK_RES)
+
+
+def strip_preprint_watermarks(pages: list[Page]) -> list[Page]:
+    """Remove preprint server watermark lines (bioRxiv, medRxiv, CC-BY notices)."""
+    cleaned = []
+    for page in pages:
+        lines = page.raw_text.splitlines()
+        filtered = [l for l in lines if not _is_watermark_line(l)]
+        cleaned.append(Page(
+            source_path=page.source_path,
+            raw_text="\n".join(filtered),
+            extraction_method=page.extraction_method,
+            page_number=page.page_number,
+            block_dicts=page.block_dicts,
+            page_height=page.page_height,
+        ))
+    return cleaned
 
 
 def detect_boilerplate_lines(pages: list[Page]) -> set[str]:

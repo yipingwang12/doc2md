@@ -18,6 +18,7 @@ from doc2md.assembly.cleaner import (
     detect_repeated_lines,
     normalize_ligatures,
     strip_headers_footers,
+    strip_preprint_watermarks,
 )
 from doc2md.assembly.citations import link_citations
 from doc2md.assembly.footnotes import link_footnotes
@@ -34,6 +35,7 @@ from doc2md.papers.index_builder import (
     write_entity_index_json,
     write_entity_index_md,
 )
+from doc2md.papers.metadata import enrich_metadata
 from doc2md.papers.models import NamedEntity, PaperDocument, PaperMetadata
 from doc2md.papers.ner.bern2 import annotate_text
 from doc2md.papers.ner.normalizer import deduplicate_entities, merge_entity_sources
@@ -161,6 +163,7 @@ def process_paper(
     repeated = detect_repeated_lines(pages)
     boilerplate = detect_boilerplate_lines(pages)
     pages = strip_headers_footers(pages, repeated | boilerplate)
+    pages = strip_preprint_watermarks(pages)
 
     # Stage 3: Classify + detect chapters
     blocks = classify_pages(pages, llm_client=None, repeated_lines=repeated | boilerplate)
@@ -184,10 +187,11 @@ def process_paper(
     if not paths:
         return []
 
-    # Stage 7: Metadata extraction
+    # Stage 7: Metadata extraction + enrichment
     metadata = _extract_metadata_from_pages(pages)
     if pmid:
         metadata.pmid = pmid
+    enrich_metadata(path, pages, metadata)
     if paths:
         _write_yaml_front_matter(metadata, paths[0])
 

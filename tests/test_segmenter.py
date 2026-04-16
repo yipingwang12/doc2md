@@ -9,6 +9,7 @@ from doc2md.analysis.segmenter import (
     _dominant_size,
     _is_all_caps_heading,
     _is_boilerplate,
+    _is_figure_panel_label,
     _line_starts_with_superscript_number,
     _rejoin_lines,
     _split_footnote_block,
@@ -95,9 +96,59 @@ class TestIsBoilerplate:
     def test_url(self):
         assert _is_boilerplate("https://doi.org/10.1017/foo Published online")
 
+    def test_preprint_watermark_cc_by(self):
+        assert _is_boilerplate("CC-BY 4.0 International license")
+
+    def test_preprint_watermark_not_certified(self):
+        assert _is_boilerplate("not certified by peer review) is the author/funder")
+
+    def test_preprint_watermark_biorxiv(self):
+        assert _is_boilerplate("posted on bioRxiv as a preprint")
+
+    def test_preprint_watermark_copyright(self):
+        assert _is_boilerplate("The copyright holder for this preprint (which was")
+
     def test_not_boilerplate(self):
         assert not _is_boilerplate("Regular text")
         assert not _is_boilerplate("12345")  # 5 digits, too long for page number
+
+
+class TestIsFigurePanelLabel:
+    def test_single_uppercase_letter(self):
+        assert _is_figure_panel_label("A")
+        assert _is_figure_panel_label("D")
+
+    def test_single_lowercase_letter(self):
+        assert _is_figure_panel_label("a")
+
+    def test_page_fraction(self):
+        assert _is_figure_panel_label("2/24")
+        assert _is_figure_panel_label("15/30")
+
+    def test_real_heading_not_panel(self):
+        assert not _is_figure_panel_label("Results")
+        assert not _is_figure_panel_label("INTRODUCTION")
+
+    def test_two_letter_abbreviation_not_panel(self):
+        assert not _is_figure_panel_label("AB")
+
+    def test_panel_label_at_heading_size_discarded(self):
+        blocks = [_text_block("A", size=16.0), _text_block("Body text here.", size=10.0)]
+        result = segment_page_blocks(blocks, 0, PROFILE)
+        texts = [b.text for b in result]
+        assert "A" not in texts
+        assert any("Body" in t for t in texts)
+
+    def test_page_fraction_at_heading_size_discarded(self):
+        blocks = [_text_block("2/24", size=16.0)]
+        result = segment_page_blocks(blocks, 0, PROFILE)
+        assert len(result) == 0
+
+    def test_real_heading_not_discarded(self):
+        blocks = [_text_block("Results", size=16.0)]
+        result = segment_page_blocks(blocks, 0, PROFILE)
+        assert len(result) == 1
+        assert result[0].block_type == "heading"
 
 
 class TestIsAllCapsHeading:
