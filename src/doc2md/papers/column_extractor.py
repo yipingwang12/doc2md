@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import fitz
-
+from doc2md.extract.pdf_extract import extract_pages
 from doc2md.models import Page
 
 # A block spanning more than this fraction of page width is treated as full-width
@@ -109,45 +108,47 @@ def reorder_blocks_two_column(blocks: list[dict], split_x: float) -> list[dict]:
     return ordered
 
 
-def extract_two_column_pages(pdf_path: Path) -> list[Page]:
-    """Extract pages with two-column reflow applied where detected.
+def _reconstruct_text(blocks: list[dict]) -> str:
+    """Rebuild raw_text from an ordered block list by joining span text."""
+    lines = []
+    for b in blocks:
+        if b.get("type") != 0:
+            continue
+        for line in b.get("lines", []):
+            line_text = "".join(s["text"] for s in line.get("spans", []))
+            if line_text.strip():
+                lines.append(line_text)
+    return "\n".join(lines)
 
-    For single-column pages, falls back to standard block order.
-    Returns the same Page objects as extract_pages, but with raw_text
-    assembled in reading order for two-column layouts.
+
+def reflow_column_pages(pages: list[Page]) -> list[Page]:
+    """Apply two-column reflow to already-extracted pages in-place.
+
+    For each page whose block_dicts contain a detectable column gutter,
+    reorders the blocks into left-then-right reading order and reconstructs
+    raw_text accordingly. Single-column pages are returned unchanged.
     """
-    pages = []
-    doc = fitz.open(pdf_path)
-    try:
-        for i in range(len(doc)):
-            page = doc[i]
-            page_dict = page.get_text("dict", sort=True)
-            page_width = page_dict.get("width", 595.0)
-            blocks = page_dict.get("blocks", [])
-
-            split_x = detect_column_split(blocks, page_width)
-            if split_x is not None:
-                blocks = reorder_blocks_two_column(blocks, split_x)
-
-            # Reconstruct raw_text from reordered blocks
-            lines = []
-            for b in blocks:
-                if b.get("type") != 0:
-                    continue
-                for line in b.get("lines", []):
-                    line_text = "".join(s["text"] for s in line.get("spans", []))
-                    if line_text.strip():
-                        lines.append(line_text)
-            raw_text = "\n".join(lines)
-
-            pages.append(Page(
-                source_path=pdf_path,
-                raw_text=raw_text,
-                extraction_method="pymupdf",
-                page_number=i + 1,
-                block_dicts=blocks,
-                page_height=page_dict.get("height", 842.0),
-            ))
-    finally:
-        doc.close()
+    for page in pages:
+        if not page.block_dicts:
+            continue
+        # Infer page width from the rightmost block edge
+        page_width = max(
+            (b["bbox"][2] for b in page.block_dicts if "bbox" in b),
+            default=595.0,
+        )
+        split_x = detect_column_split(page.block_dicts, page_width)
+        if split_x is None:
+            continue
+        page.block_dicts = reorder_blocks_two_column(page.block_dicts, split_x)
+        page.raw_text = _reconstruct_text(page.block_dicts)
     return pages
+
+
+def extract_two_column_pages(pdf_path: Path) -> list[Page]:
+    """Extract pages from a PDF and apply two-column reflow where detected.
+
+    Delegates extraction to extract_pages (shared with the book pipeline),
+    then applies column reflow as a post-processing step.
+    """
+    pages = extract_pages(pdf_path)
+    return reflow_column_pages(pages)

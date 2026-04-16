@@ -12,6 +12,7 @@ from pathlib import Path
 
 import requests
 
+from doc2md.extract.detect import extract_auto
 from doc2md.assembly.cleaner import (
     detect_boilerplate_lines,
     detect_repeated_lines,
@@ -25,7 +26,7 @@ from doc2md.analysis.classifier import classify_pages
 from doc2md.analysis.chapter_detector import detect_chapters
 from doc2md.config import Config
 from doc2md.output.markdown_writer import write_chapters
-from doc2md.papers.column_extractor import extract_two_column_pages
+from doc2md.papers.column_extractor import reflow_column_pages
 from doc2md.papers.index_builder import (
     build_entity_index,
     load_entity_index,
@@ -138,8 +139,12 @@ def process_paper(
     """
     doc_name = path.stem
 
-    # Stage 1: Extract with two-column reflow
-    pages = extract_two_column_pages(path)
+    # Stage 1: Extract (digital → PyMuPDF; scanned → OCR cascade) + two-column reflow
+    pages = reflow_column_pages(extract_auto(
+        path,
+        min_chars=config.extraction.pymupdf_min_chars,
+        gibberish_threshold=config.extraction.gibberish_threshold,
+    ))
     if not pages:
         logger.warning("No pages extracted from %s", path)
         return []

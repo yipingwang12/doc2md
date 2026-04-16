@@ -5,6 +5,7 @@ from pathlib import Path
 from doc2md.papers.column_extractor import (
     detect_column_split,
     extract_two_column_pages,
+    reflow_column_pages,
     reorder_blocks_two_column,
 )
 
@@ -99,15 +100,37 @@ class TestReorderBlocksTwoColumn:
         assert any(b.get("type") == 1 for b in result)
 
 
-class TestExtractTwoColumnPages:
-    def test_returns_pages(self, tmp_path):
-        # Use an existing small PDF from the test fixtures if available,
-        # otherwise just verify the function is importable and callable with a stub.
-        import importlib
-        assert importlib.import_module("doc2md.papers.column_extractor")
+class TestReflowColumnPages:
+    def test_single_column_pages_unchanged(self, tmp_path):
+        """Pages with no detectable column gutter pass through unchanged."""
+        import fitz
+        from doc2md.extract.pdf_extract import extract_pages
 
-    def test_single_column_pdf_unchanged_order(self, tmp_path):
-        """Single-column PDF should produce same text as standard extract_pages."""
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), "Hello world single column text.")
+        pdf_path = tmp_path / "single.pdf"
+        doc.save(str(pdf_path))
+        doc.close()
+
+        pages = extract_pages(pdf_path)
+        original_text = pages[0].raw_text
+        reflow_column_pages(pages)
+        assert pages[0].raw_text == original_text
+
+    def test_pages_without_block_dicts_skipped(self):
+        """Pages with no block_dicts are returned without error."""
+        from pathlib import Path
+        from doc2md.models import Page
+        page = Page(source_path=Path("/x.pdf"), raw_text="text",
+                    extraction_method="pymupdf", block_dicts=None)
+        result = reflow_column_pages([page])
+        assert result[0].raw_text == "text"
+
+
+class TestExtractTwoColumnPages:
+    def test_delegates_to_extract_pages(self, tmp_path):
+        """extract_two_column_pages must use extract_pages, not open fitz directly."""
         import fitz
         from doc2md.extract.pdf_extract import extract_pages
 
@@ -121,4 +144,5 @@ class TestExtractTwoColumnPages:
         std_pages = extract_pages(pdf_path)
         two_col_pages = extract_two_column_pages(pdf_path)
         assert len(std_pages) == len(two_col_pages)
+        # Single-column: text content must match
         assert std_pages[0].raw_text.strip() == two_col_pages[0].raw_text.strip()
