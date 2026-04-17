@@ -33,6 +33,47 @@ _SKIP_SUBSTRINGS = [
 
 
 
+def extract_yaml_front_matter(md_path: Path) -> dict:
+    """Parse YAML front matter from a markdown file.
+
+    Handles scalar values and list values (lines starting with '  - ').
+    Returns dict with any of: title, authors, journal, year, doi, pmid.
+    """
+    try:
+        text = md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}
+    end = None
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            end = i
+            break
+    if end is None:
+        return {}
+
+    result: dict = {}
+    current_key = None
+    for line in lines[1:end]:
+        if line.startswith("  - "):
+            if current_key is not None:
+                if not isinstance(result.get(current_key), list):
+                    result[current_key] = []
+                result[current_key].append(line[4:].strip())
+        elif ":" in line:
+            key, _, val = line.partition(":")
+            key = key.strip()
+            val = val.strip()
+            current_key = key
+            if val:
+                result[key] = val
+            else:
+                result[key] = []
+    return result
+
+
 def extract_title(md_path: Path) -> str | None:
     """Extract chapter title from a markdown file.
 
@@ -135,21 +176,29 @@ def build_library(results_dir: Path = DEFAULT_RESULTS_DIR) -> dict:
             # chapter_01_front_matter.md, get title from the content file
             # (chapter_02+) but include all files for reading.
             title_file = md_files[-1] if len(md_files) > 1 else md_files[0]
-            title = extract_title(title_file)
 
+            paper_metadata = extract_yaml_front_matter(md_files[0])
+            yaml_title = paper_metadata.get("title", "")
+            if yaml_title == "Unknown":
+                yaml_title = ""
+
+            title = yaml_title or extract_title(title_file)
             if not title:
                 title = prettify_dir_name(chapter_dir.name)
 
             rel_paths = [str(f.relative_to(results_dir.parent)) for f in md_files]
 
             words = sum(count_body_words(f) for f in md_files)
-            chapters.append({
+            entry: dict = {
                 "id": chapter_dir.name,
                 "title": title,
                 "path": rel_paths[0],
                 "paths": rel_paths if len(rel_paths) > 1 else None,
                 "words": words,
-            })
+            }
+            if paper_metadata:
+                entry["paper_metadata"] = paper_metadata
+            chapters.append(entry)
 
         if chapters:
             book_words = sum(ch["words"] for ch in chapters)

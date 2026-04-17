@@ -209,7 +209,18 @@ async function openChapter(bookId, chapterId) {
       if (!resp.ok) throw new Error('Failed to load chapter');
       return resp.text();
     }));
-    renderChapter(parts.join('\n\n'));
+
+    // Derive figures.json path from chapter path (same directory)
+    const chapterPath = chapter.path;
+    const lastSlash = chapterPath.lastIndexOf('/');
+    const chapterDir = lastSlash >= 0 ? chapterPath.slice(0, lastSlash) : '';
+    let figuresData = null;
+    try {
+      const figResp = await fetch(BASE + (chapterDir ? chapterDir + '/' : '') + 'figures.json');
+      if (figResp.ok) figuresData = await figResp.json();
+    } catch { /* figures.json optional */ }
+
+    renderChapter(parts.join('\n\n'), figuresData, chapterDir);
 
     const book = findBook(bookId);
     $('#book-title-text').textContent = book?.title || '';
@@ -273,7 +284,60 @@ function toggleSidebar() {
 
 // --- Rendering ---
 
-function renderChapter(markdownText) {
+// --- YAML Front Matter ---
+
+function parseYamlFrontMatter(text) {
+  const lines = text.split('\n');
+  if (!lines.length || lines[0].trim() !== '---') return { meta: {}, body: text };
+  let endIdx = null;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') { endIdx = i; break; }
+  }
+  if (endIdx === null) return { meta: {}, body: text };
+
+  const meta = {};
+  let currentKey = null;
+  for (let i = 1; i < endIdx; i++) {
+    const line = lines[i];
+    if (line.startsWith('  - ')) {
+      if (currentKey !== null) {
+        if (!Array.isArray(meta[currentKey])) meta[currentKey] = [];
+        meta[currentKey].push(line.slice(4).trim());
+      }
+    } else if (line.includes(':')) {
+      const colon = line.indexOf(':');
+      const key = line.slice(0, colon).trim();
+      const val = line.slice(colon + 1).trim();
+      currentKey = key;
+      meta[key] = val || [];
+    }
+  }
+  const body = lines.slice(endIdx + 1).join('\n');
+  return { meta, body };
+}
+
+function buildPaperMetaHtml(meta) {
+  const parts = [];
+  const title = meta.title;
+  const authors = meta.authors;
+  const journal = meta.journal;
+  const year = meta.year;
+  if (!title && !authors && !journal && !year) return '';
+  if (title && title !== 'Unknown') {
+    parts.push(`<div class="paper-meta-title">${title}</div>`);
+  }
+  if (authors) {
+    const authorStr = Array.isArray(authors) ? authors.join('; ') : authors;
+    if (authorStr) parts.push(`<div class="paper-meta-authors">${authorStr}</div>`);
+  }
+  if (journal || year) {
+    const jy = [journal, year].filter(Boolean).join(' \u00B7 ');
+    parts.push(`<div class="paper-meta-journal">${jy}</div>`);
+  }
+  return parts.length ? `<div class="paper-meta">${parts.join('')}</div>` : '';
+}
+
+function renderChapter(markdownText, figuresData, chapterDir) {
   // New content invalidates any in-progress playback
   if (playback.active) {
     pausePlayback();
@@ -283,10 +347,14 @@ function renderChapter(markdownText) {
     document.body.classList.remove('playback-active');
     updatePlaybackButtons();
   }
-  const html = md.render(markdownText);
+  const { meta, body } = parseYamlFrontMatter(markdownText);
+  const paperMetaHtml = buildPaperMetaHtml(meta);
+  const html = paperMetaHtml + md.render(body);
   const container = $('#reader-content');
   container.innerHTML = html;
   setupFootnotePopovers(container);
+  setupCitationPopovers(container);
+  setupFigurePopovers(container, figuresData || null, chapterDir || '');
 }
 
 // --- Pagination ---
@@ -862,12 +930,208 @@ function dismissPopover() {
   document.removeEventListener('click', onDismissPopover);
 }
 
+// --- Citation Popovers ---
+
+function setupCitationPopovers(container) {
+  // Build reference map from numbered list
+  const refMap = {};
+
+  // Try <ol> whose items start with digits
+  const ols = container.querySelectorAll('ol');
+  let refOl = null;
+  for (const ol of ols) {
+    const firstLi = ol.querySelector('li');
+    if (firstLi && /^\d/.test(firstLi.textContent.trim())) {
+      refOl = ol;
+      break;
+    }
+  }
+
+  if (refOl) {
+    const items = refOl.querySelectorAll('li');
+    items.forEach((li, i) => {
+      refMap[i + 1] = li.textContent.trim();
+    });
+  } else {
+    // Fallback: <p> elements matching "N. text"
+    const paras = container.querySelectorAll('p');
+    paras.forEach(p => {
+      const m = p.textContent.trim().match(/^(\d+)\.\s/);
+      if (m) refMap[parseInt(m[1], 10)] = p.textContent.trim();
+    });
+  }
+
+  if (!Object.keys(refMap).length) return;
+
+  // Walk text nodes, skip .footnotes, headings, and the refOl
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== container) {
+        if (p.classList && (p.classList.contains('footnotes') || p.classList.contains('paper-meta'))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (refOl && p === refOl) return NodeFilter.FILTER_REJECT;
+        const tag = p.tagName;
+        if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+
+  const citeRe = /(\d+)((?:,\s*\d+)*)/g;
+
+  for (const textNode of textNodes) {
+    const val = textNode.nodeValue;
+    citeRe.lastIndex = 0;
+    let match;
+    const spans = [];
+    let lastIdx = 0;
+
+    while ((match = citeRe.exec(val)) !== null) {
+      const full = match[0];
+      const nums = full.split(',').map(s => parseInt(s.trim(), 10));
+      if (!nums.every(n => refMap[n])) continue;
+
+      spans.push({ start: match.index, end: match.index + full.length, nums });
+    }
+
+    if (!spans.length) continue;
+
+    const frag = document.createDocumentFragment();
+    for (const sp of spans) {
+      if (lastIdx < sp.start) {
+        frag.appendChild(document.createTextNode(val.slice(lastIdx, sp.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'cite-ref';
+      span.dataset.refs = sp.nums.join(',');
+      span.textContent = val.slice(sp.start, sp.end);
+      span.addEventListener('mouseover', (e) => {
+        const refs = e.currentTarget.dataset.refs.split(',').map(Number);
+        const html = refs.map(n => `<p>${refMap[n]}</p>`).join('');
+        showFootnotePopover(html, e.clientX, e.clientY);
+      });
+      span.addEventListener('mouseout', dismissPopover);
+      frag.appendChild(span);
+      lastIdx = sp.end;
+    }
+    if (lastIdx < val.length) {
+      frag.appendChild(document.createTextNode(val.slice(lastIdx)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+// --- Figure Popovers ---
+
+function setupFigurePopovers(container, figuresData, chapterDir) {
+  const figMap = {};
+  if (figuresData && figuresData.length) {
+    for (const fig of figuresData) {
+      figMap[fig.figure_id] = fig;
+    }
+  }
+
+  const figRe = /\b(Figure|Fig\.)\s+(S?\d+[A-Za-z]?)/g;
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== container) {
+        if (p.classList && (p.classList.contains('footnotes') || p.classList.contains('paper-meta'))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+
+  for (const textNode of textNodes) {
+    const val = textNode.nodeValue;
+    figRe.lastIndex = 0;
+    let match;
+    const spans = [];
+    let lastIdx = 0;
+
+    while ((match = figRe.exec(val)) !== null) {
+      spans.push({ start: match.index, end: match.index + match[0].length, id: match[2], full: match[0] });
+    }
+    if (!spans.length) continue;
+
+    const frag = document.createDocumentFragment();
+    for (const sp of spans) {
+      if (lastIdx < sp.start) {
+        frag.appendChild(document.createTextNode(val.slice(lastIdx, sp.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'fig-ref';
+      span.dataset.figId = sp.id;
+      span.textContent = sp.full;
+      if (figMap[sp.id]) {
+        span.addEventListener('click', () => showFigureModal(figMap[sp.id], chapterDir));
+      }
+      frag.appendChild(span);
+      lastIdx = sp.end;
+    }
+    if (lastIdx < val.length) {
+      frag.appendChild(document.createTextNode(val.slice(lastIdx)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+function showFigureModal(fig, chapterDir) {
+  dismissFigureModal();
+  const modal = document.createElement('div');
+  modal.className = 'figure-modal';
+
+  const content = document.createElement('div');
+  content.className = 'figure-modal-content';
+
+  const img = document.createElement('img');
+  const imgBase = chapterDir ? BASE + chapterDir + '/' : BASE;
+  img.src = imgBase + fig.image_path;
+  img.alt = fig.caption || '';
+
+  const caption = document.createElement('div');
+  caption.className = 'figure-modal-caption';
+  caption.textContent = fig.caption || '';
+
+  content.appendChild(img);
+  if (fig.caption) content.appendChild(caption);
+  modal.appendChild(content);
+  document.body.appendChild(modal);
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) dismissFigureModal();
+  });
+}
+
+function dismissFigureModal() {
+  document.querySelectorAll('.figure-modal').forEach(el => el.remove());
+}
+
 // --- Keyboard Navigation ---
 
 function handleKeydown(e) {
-  // Escape: close popover, or return to library
+  // Escape: close modal/popover, or return to library
   if (e.key === 'Escape') {
-    if (document.querySelector('.footnote-popover')) {
+    if (document.querySelector('.figure-modal')) {
+      dismissFigureModal();
+    } else if (document.querySelector('.footnote-popover')) {
       dismissPopover();
     } else if (state.currentChapter) {
       showLibrary();

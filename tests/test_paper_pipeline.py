@@ -108,10 +108,9 @@ class TestProcessPaper:
         with patch("doc2md.papers.pipeline.fetch_entities_by_pmid",
                    side_effect=req.HTTPError("404")), \
              patch("doc2md.papers.pipeline.annotate_text", return_value=[]):
-            # Should not raise — PubTator failure is expected to propagate here
-            # since pipeline doesn't catch NER errors to keep error handling explicit
-            with pytest.raises(req.HTTPError):
-                process_paper(pdf, config, pmid="00000000")
+            # Should not raise — NER errors are caught and logged, pipeline continues
+            result = process_paper(pdf, config, pmid="00000000")
+            assert result  # markdown was still written
 
     def test_no_pmid_skips_pubtator(self, tmp_path):
         pdf = _make_pdf(tmp_path)

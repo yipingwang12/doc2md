@@ -211,6 +211,15 @@ def process_paper(
     write_entity_index_json(merged_index, index_path)
     write_entity_index_md(merged_index, index_path.with_suffix(".md"))
 
+    # Stage 11: Figure extraction
+    try:
+        from doc2md.papers.figure_extractor import extract_figures_from_pdf, write_figures_json
+        figures = extract_figures_from_pdf(path, pages, output_dir / doc_name, dpi=150)
+        write_figures_json(figures, output_dir / doc_name)
+        logger.info("Figures: %d extracted from %s", len(figures), doc_name)
+    except Exception as exc:
+        logger.warning("Figure extraction failed for %s: %s", doc_name, exc)
+
     return paths
 
 

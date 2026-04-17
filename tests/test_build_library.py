@@ -8,7 +8,7 @@ import pytest
 # Add reader/ to path so we can import build_library
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reader"))
 
-from build_library import build_library, count_body_words, extract_title, prettify_dir_name
+from build_library import build_library, count_body_words, extract_title, extract_yaml_front_matter, prettify_dir_name
 
 
 @pytest.fixture
@@ -186,3 +186,106 @@ def test_build_library_skips_frontmatter_dirs(tmp_path):
     ids = [c["id"] for c in lib["books"][0]["chapters"]]
     assert "010_pp_i_xxx_frontmatter" not in ids
     assert "020_pp_1_20_intro" in ids
+
+
+# --- Tests for extract_yaml_front_matter ---
+
+_FRONT_MATTER_MD = """\
+---
+title: Comprehensive integration of single cell data
+authors:
+  - Tim Stuart 1
+  - Avi Srivastava 2
+journal: Cell
+year: 2019
+doi: 10.1016/j.cell.2019.05.031
+pmid: 31178118
+---
+
+# Introduction
+
+Body text here.
+"""
+
+
+def test_extract_yaml_front_matter_title(tmp_path):
+    md = tmp_path / "paper.md"
+    md.write_text(_FRONT_MATTER_MD)
+    result = extract_yaml_front_matter(md)
+    assert result["title"] == "Comprehensive integration of single cell data"
+
+
+def test_extract_yaml_front_matter_authors_list(tmp_path):
+    md = tmp_path / "paper.md"
+    md.write_text(_FRONT_MATTER_MD)
+    result = extract_yaml_front_matter(md)
+    assert isinstance(result["authors"], list)
+    assert "Tim Stuart 1" in result["authors"]
+    assert "Avi Srivastava 2" in result["authors"]
+
+
+def test_extract_yaml_front_matter_scalar_fields(tmp_path):
+    md = tmp_path / "paper.md"
+    md.write_text(_FRONT_MATTER_MD)
+    result = extract_yaml_front_matter(md)
+    assert result["journal"] == "Cell"
+    assert result["year"] == "2019"
+    assert result["doi"] == "10.1016/j.cell.2019.05.031"
+    assert result["pmid"] == "31178118"
+
+
+def test_extract_yaml_front_matter_no_front_matter(tmp_path):
+    md = tmp_path / "plain.md"
+    md.write_text("# Just a heading\n\nBody text.\n")
+    result = extract_yaml_front_matter(md)
+    assert result == {}
+
+
+def test_extract_yaml_front_matter_missing_file(tmp_path):
+    result = extract_yaml_front_matter(tmp_path / "nonexistent.md")
+    assert result == {}
+
+
+# --- Tests for build_library YAML integration ---
+
+def test_build_library_uses_yaml_title(tmp_path):
+    """YAML front matter title overrides heading-based title."""
+    results = tmp_path / "results"
+    book = results / "papers"
+    ch = book / "smith_2024"
+    ch.mkdir(parents=True)
+    (ch / "chapter_01_main.md").write_text(
+        "---\ntitle: My Paper Title\nauthors:\n  - Jane Smith\njournal: Nature\nyear: 2024\ndoi: \npmid: \n---\n\n"
+        "# Some Other Heading\n\nBody text here.\n"
+    )
+    lib = build_library(results)
+    chapter = lib["books"][0]["chapters"][0]
+    assert chapter["title"] == "My Paper Title"
+
+
+def test_build_library_paper_metadata_field(tmp_path):
+    """paper_metadata is included in chapter entries when YAML present."""
+    results = tmp_path / "results"
+    book = results / "papers"
+    ch = book / "smith_2024"
+    ch.mkdir(parents=True)
+    (ch / "chapter_01_main.md").write_text(
+        "---\ntitle: My Paper Title\nauthors:\n  - Jane Smith\njournal: Nature\nyear: 2024\ndoi: \npmid: \n---\n\n"
+        "# Heading\n\nBody.\n"
+    )
+    lib = build_library(results)
+    chapter = lib["books"][0]["chapters"][0]
+    assert "paper_metadata" in chapter
+    assert chapter["paper_metadata"]["journal"] == "Nature"
+
+
+def test_build_library_no_paper_metadata_without_yaml(tmp_path):
+    """Chapters without YAML front matter don't get paper_metadata."""
+    results = tmp_path / "results"
+    book = results / "mybook"
+    ch = book / "intro"
+    ch.mkdir(parents=True)
+    (ch / "chapter_01_intro.md").write_text("# Introduction\n\nBody.\n")
+    lib = build_library(results)
+    chapter = lib["books"][0]["chapters"][0]
+    assert "paper_metadata" not in chapter
