@@ -184,6 +184,7 @@ _PREPRINT_WATERMARK_RES = [
     re.compile(r"The copyright holder for this preprint", re.IGNORECASE),
     re.compile(r"author/funder", re.IGNORECASE),
     re.compile(r"perpetuity\b", re.IGNORECASE),
+    re.compile(r"^[\u25CF\u2022\u25E6\u25AA\u25AB\u2023\u2043\s]+$"),  # symbol-only lines
 ]
 _FIGURE_PANEL_RE = re.compile(r"^([A-Za-z]|\d{1,3}/\d{1,3})$")
 

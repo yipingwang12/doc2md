@@ -317,6 +317,10 @@ Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + 
 - **Progress bar** — page count, chapter word count + percentage, book word count
 - **Keyboard navigation** — arrow keys, space, escape
 - **`build_library.py`** — scans results/ and generates library.json with word counts; deduplicates section dividers by content hash; skips metadata dirs; extracts titles from `###` headings with multiline continuation; supports multi-file chapters (front matter + content)
+- **Paper header** — YAML front matter stripped before rendering; title/authors/journal·year shown above chapter content
+- **Citation hover popovers** — inline `[N]` references resolved against rendered `<ol>` reference list; hover shows citation text in popover
+- **Figure click modals** — "Figure N" / "Fig. N" text references matched against `figures.json`; click opens fullscreen overlay with high-res figure image and caption
+- **Papers in library** — `results/papers/` treated as a book; paper YAML metadata (title, authors, journal, year) included in library.json and displayed in reader
 
 ### Usage
 
@@ -508,9 +512,9 @@ Embed paragraphs with a local model, index in FAISS, run coreference resolution 
 
 GraphRAG requires LLM calls for every chunk during indexing — expensive on a 3M-word corpus. Phases 1–3 get 90% of value with minimal compute. GraphRAG would add value for complex multi-hop queries but can wait until simpler phases prove insufficient.
 
-## Academic Paper Pipeline — Research Findings
+## Academic Paper Pipeline (Implemented)
 
-Feature goal: ingest academic PDFs (e.g. Cell journal), convert to structured markdown, run biomedical entity recognition, and generate a cross-paper entity index.
+Ingests academic PDFs (e.g. Cell journal), converts to structured markdown, runs biomedical entity recognition, and generates a cross-paper entity index. Tested on Stuart et al. 2019 (Seurat v3, *Cell*).
 
 ### PDF extraction
 
@@ -548,18 +552,33 @@ PDF → PyMuPDF extract → clean/segment (paper sections) → PMID lookup → P
 → merge + normalize entities → inverted index → entity_index.json + entity_index.md
 ```
 
-### Planned CLI additions
+### Implemented pipeline stages
 
 ```
-doc2md papers process <pdf>          # extract + segment + write paper.md
-doc2md papers build-index            # PubTator/BERN2 NER → entity_index
-doc2md papers search-entity <name>   # query entity index
+doc2md papers process <pdf>          # full pipeline: extract → clean → segment → NER → markdown + entities.json + entity_index
 ```
+
+Stages: PyMuPDF extract → two-column reflow → normalize ligatures → strip watermarks/symbols → header/footer removal → classify blocks → detect chapters → section labelling → link footnotes/citations → merge text → write markdown → enrich metadata → NER (PubTator + BERN2) → write entities.json → update entity_index.json + entity_index.md → figure extraction.
+
+**Metadata enrichment** (`papers/metadata.py`): four-source cascade (PDF metadata → first-page font heuristics → PubMed efetch XML → CrossRef REST API), each source only fills empty fields.
+
+**Figure extraction** (`papers/figure_extractor.py`): raster images via `get_images(full=True)` + `extract_image(xref)` (skip < 150px); vector fallback via `get_pixmap(clip=bbox)` on type-1 image blocks; caption matched as nearest text block starting with "Figure"/"Fig." within 150pt. Saves to `output_dir/figures/` with `figures.json` index.
+
+**Preprint watermark filter**: strips bioRxiv/medRxiv CC-BY notices from `raw_text` (cleaner) and from block dicts (segmenter). Also strips symbol-only lines (U+25CF ●, U+2022 •, etc.) that are PDF encoding artifacts from data tables/figures — both in `strip_preprint_watermarks()` and in `_is_boilerplate()`.
+
+**Figure panel label filter**: single-letter or N/M fraction blocks (e.g. "A", "2/24") detected by `_is_figure_panel_label()` and dropped before heading classification.
+
+### Processing log: Stuart et al. 2019 (Seurat v3)
+
+- **Source**: bioRxiv preprint PDF (`stuart2019_seurat.pdf`)
+- **Issue**: 41,964 lines of `●` (U+25CF) in raw extraction from data table cells; bloated output 79,339 → 1,743 lines after fix
+- **Metadata**: title/journal/year filled from PubMed (PMID 31178118); authors parsed from first-page font heuristics
+- **Figures**: Figure 1 (PNG) + Figure 2 (JPEG) extracted with full captions; many unlabeled images extracted with fallback IDs (p4i0, etc.)
+- **NER**: skipped in test run (mocked); entity pipeline wired and tested via unit tests
 
 ## Non-Goals (Current Scope)
 
 - Cloud LLM support (currently Ollama-only)
 - Table extraction / reconstruction
-- Image/figure extraction (captions only)
 - Multi-language OCR
 - Intermediate data persistence (pages are re-extracted on partial resume)

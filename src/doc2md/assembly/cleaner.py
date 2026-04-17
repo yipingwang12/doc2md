@@ -98,6 +98,7 @@ _PREPRINT_WATERMARK_RES = [
     re.compile(r"author/funder", re.IGNORECASE),
     re.compile(r"perpetuity\b", re.IGNORECASE),
     re.compile(r"^\s*[.;]\s*$"),  # standalone punctuation artifacts
+    re.compile(r"^[\u25CF\u2022\u25E6\u25AA\u25AB\u2023\u2043\s]+$"),  # symbol-only lines (PDF encoding artifacts)
 ]
 
 
