@@ -251,23 +251,16 @@ Cascade stages missing their Python dependency are silently skipped at runtime; 
 - **Page break gaps** — 19 sentences across 2.97M words have a blank line at a page boundary; fixing requires cross-page sentence analysis for negligible reader impact
 - **Duplicate source files** — zip downloads from Cambridge Core sometimes contain duplicate PDFs; `build_library.py` deduplicates by SHA-256 content hash; section divider PDFs (Part titles) are filtered
 - **PDF control char encoding** — Cambridge UP PDFs encode Semitic transliteration characters (ayin ʿ, alef ʾ) as ASCII control codes U+0002/U+0003; cleaner maps these to Unicode modifier letters U+02BF/U+02BE
-- **Cascade image-only page over-escalation** — pages with no real text currently fail Tesseract's `min_lines=3` check and cascade through Apple Vision → Surya before finally accepting the empty result. Wastes a few seconds per image-only page; doesn't affect correctness
+- ~~**Cascade image-only page over-escalation**~~ — fixed: `default_quality_check` now returns `True` for empty `raw_text`, short-circuiting at Tesseract for image-only pages
 - **Cascade title-detection regression** — Tesseract and Apple Vision don't provide font metadata (block dicts), so their pages bypass `analysis/segmenter.py`'s font-based title/heading classification. Pages that would have been classified as headings via font size/name in a Surya-only run fall through to raw-text heuristics in the cascade run
 
 ## Future Work: OCR Cascade
 
 The cascade is functional end-to-end and already delivers a ~2.5× speedup on Boston, but several quality and performance improvements are identified and not yet implemented. Each is a self-contained follow-up.
 
-### 1. Fix image-only page over-escalation
+### ~~1. Fix image-only page over-escalation~~ (done)
 
-Update `default_quality_check()` to accept empty Tesseract results as "no text found" rather than "engine failed":
-
-```python
-if not result.page.raw_text:
-    return True  # empty result = image-only page, accept
-```
-
-Combined with Tesseract's already-fast 0.2 sec/half-page, this should cut Boston's cascade runtime further because most image-only pages (covers, artifact photos, figure-only pages) will short-circuit at stage 1. Trade-off: the rule assumes Tesseract's OCR signal is reliable enough to distinguish "genuinely no text" from "text Tesseract couldn't read"; that's plausibly true for clean printed books but worth validating.
+`default_quality_check()` now returns `True` when `raw_text` is empty — image-only pages short-circuit at the first engine.
 
 ### 2. Preserve Surya block metadata for classification
 
@@ -303,7 +296,7 @@ Candidate books: Boston (image-heavy Libby spreads), Morocco (text-heavy browser
 
 ### Overview
 
-Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + CSS, served via `python -m http.server`. Paginated two-column layout inspired by Libby/Kindle.
+Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + CSS, served via embedded `http.server` in the PyWebView desktop app. Paginated two-column layout inspired by Libby/Kindle.
 
 ### Current features
 
@@ -326,8 +319,9 @@ Built-in web-based Markdown reader at `reader/`. No build step — vanilla JS + 
 
 ```bash
 python reader/build_library.py   # generate library.json
-python -m http.server 8000       # serve from project root
-# open http://localhost:8000/reader/
+doc2md-reader                    # launch desktop app (PyWebView)
+# or: python src/doc2md/desktop.py
+# or for dev: python -m http.server 8000 → http://localhost:8000/reader/
 ```
 
 ### Future reader enhancements
@@ -338,17 +332,18 @@ python -m http.server 8000       # serve from project root
 - Line spacing and margin controls
 - "Time left in chapter" estimate
 - Offline support (Service Worker)
-- Desktop app wrapper (Tauri v2)
+- ~~Desktop app wrapper~~ ✅ `doc2md-reader` — PyWebView desktop app (py2app alias bundle in `dist/`)
 
 ### Tech stack
 
 | Component | Choice |
 |---|---|
-| Markdown→HTML | markdown-it + markdown-it-footnote (CDN) |
+| Markdown→HTML | markdown-it + markdown-it-footnote (vendored in `reader/vendor/`) |
 | Pagination | CSS multi-column layout + scrollLeft |
 | Framework | Vanilla JS (~450 lines) |
 | Themes | CSS custom properties |
-| Serving | `python -m http.server` |
+| Serving | PyWebView + embedded `http.server` (desktop); `python -m http.server` (dev) |
+| Desktop bundle | py2app alias mode — `dist/doc2md Reader.app` (~228 KB, symlinks into venv) |
 
 ### Column bleed: diagnosis and solution
 

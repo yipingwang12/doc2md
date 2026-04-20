@@ -41,4 +41,19 @@ doc2md run             # full pipeline
 doc2md status          # cache status
 doc2md process <path>  # single file
 doc2md link-index <vol> # link index entries to chapters
+doc2md-reader          # launch desktop e-book reader (PyWebView)
 ```
+
+## Desktop App
+
+`src/doc2md/desktop.py` — PyWebView wrapper around the `reader/` web UI. Starts an embedded `http.server` on a free port and opens a native macOS window (WKWebView).
+
+**Build alias .app bundle (no interpreter bundled, ~228 KB):**
+```sh
+cd _desktop_build
+../.venv/bin/python setup.py py2app --alias
+# → dist/doc2md Reader.app
+```
+
+- `_desktop_build/setup.py` — isolated from `pyproject.toml` to avoid py2app 0.28 `install_requires` conflict
+- `reader/vendor/` — bundled `markdown-it.min.js` + `markdown-it-footnote.min.js` for offline use (no CDN dependency)
