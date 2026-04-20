@@ -12,6 +12,7 @@ dependencies = [
     "surya-ocr>=0.17",
     "transformers>=4.50,<5",
     "requests>=2.31",
+    "pywebview>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ cascade = [
 
 [project.scripts]
 doc2md = "doc2md.cli:main"
+doc2md-reader = "doc2md.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
