@@ -561,15 +561,32 @@ Stages: PyMuPDF extract → two-column reflow → normalize ligatures → strip 
 
 **Preprint watermark filter**: strips bioRxiv/medRxiv CC-BY notices from `raw_text` (cleaner) and from block dicts (segmenter). Also strips symbol-only lines (U+25CF ●, U+2022 •, etc.) that are PDF encoding artifacts from data tables/figures — both in `strip_preprint_watermarks()` and in `_is_boilerplate()`.
 
-**Figure panel label filter**: single-letter or N/M fraction blocks (e.g. "A", "2/24") detected by `_is_figure_panel_label()` and dropped before heading classification. **Math expression filter** (`_is_math_expression()`): blocks containing `=`, `−`, `ˆ`, `˜`, or Unicode Greek/math symbols are also dropped — prevents equation fragments (e.g. `zi j = xi j − x̄i`) from being misclassified as headings via the heading-font branch.
+**Figure panel label filter**: single-letter or N/M fraction blocks (e.g. "A", "2/24") detected by `_is_figure_panel_label()` and dropped before heading classification. **Math expression filter** (`_is_math_expression()`): blocks containing `=`, `−`, `ˆ`, `˜`, or Unicode Greek/math symbols are dropped — applied to the large-font, heading-font, AND all-caps branches. Equations like `C = BW T` and `I = N` pass `_is_all_caps_heading()` because all their letters happen to be uppercase; the math filter now catches these in all three branches.
 
 ### Processing log: Stuart et al. 2019 (Seurat v3)
 
-- **Source**: bioRxiv preprint PDF (`stuart2019_seurat.pdf`)
-- **Issue**: 41,964 lines of `●` (U+25CF) in raw extraction from data table cells; bloated output 79,339 → 1,743 lines after fix
-- **Metadata**: title/journal/year filled from PubMed (PMID 31178118); authors parsed from first-page font heuristics
-- **Figures**: Figure 1 (PNG) + Figure 2 (JPEG) extracted with full captions; many unlabeled images extracted with fallback IDs (p4i0, etc.)
-- **NER**: skipped in test run (mocked); entity pipeline wired and tested via unit tests
+- **Source**: bioRxiv preprint PDF downloaded from bioRxiv (`10.1101/460147`), 24 pages, 19 MB
+- **Extraction**: PyMuPDF, all 24 pages have block_dicts; two-column reflow applied
+- **NER**: PubTator (PMID 31178118) + regex method extractor (147 method entities: scRNA-seq, ATAC-seq, CITE-seq, STARmap, UMAP, CCA, etc.); BERN2 public API down at test time
+- **Figures**: 8 extracted — Figures 1, 2, 4, 5 captioned; page 6 has 4 unlabeled subpanels (fallback IDs p6i0–p6i3, likely Figure 3 panels)
+- **Headings fixed**: `C = BW T` and `I = N` (Methods equations) were misclassified as headings via the ALL_CAPS branch; fixed by adding `_is_math_expression()` guard there
+- **Runtime**: ~21 sec (network-bound by PubTator lookup; local extraction ~3 sec)
+
+### Known paper pipeline issues (found via Playwright e-reader audit)
+
+1. **Superscripts as footnote refs** — author affiliation numbers (`[^1]`, `[^2]`), citation superscripts, and subscript gene names (`CD[^4]`, `Gad[^2]`) are all emitted as `[^N]` markdown footnote syntax. The reader renders these as 321 footnote links against only ~5 actual definitions. Root cause: superscript spans in PyMuPDF are not distinguished from true footnote markers during extraction; need a heuristic to suppress mid-line superscripts that are citation/affiliation numbers.
+
+2. **Figure refs not clickable** — 31 "Figure N" text references appear in the markdown, but none are wired to the figure modal in the reader. The modal only activates for images embedded inline; text refs need to be converted to `<span data-fig="N">Figure N</span>` anchors during rendering.
+
+3. **`Reference`/`Query` diagram labels as headings** — these single-word figure-axis labels appear as `### Reference` / `### Query` throughout the Results section. They cannot be filtered by `_is_math_expression` or `_is_figure_panel_label`; suppressing them requires page-level figure detection (e.g. skip heading classification for blocks that overlap with an image bounding box).
+
+4. **Library card title** — the papers folder shows `"Papers1 chapters"` (no separator between title span and chapter-count span). Reader `build_library.py` uses the results subfolder name (`papers`) as the book title; should use the YAML `title` field from the first chapter's front matter instead.
+
+5. **Topbar shows folder name** — reader topbar displays `"Papers"` instead of the paper's actual title. Same root cause as #4.
+
+6. **Author metadata parsing** — affiliation superscripts (`1`, `2`, `*`) are extracted as separate list items in the YAML `authors` field. The metadata extractor needs to strip trailing superscript tokens from author name strings.
+
+7. **Garbled table text** — comparison table cells produce `"80$3B"` artifacts (PDF encoding of method name abbreviations). Not caught by the preprint watermark filter; needs a separate table-cell artifact filter or a minimum word-length heuristic.
 
 ## Non-Goals (Current Scope)
 
