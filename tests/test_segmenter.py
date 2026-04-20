@@ -10,6 +10,7 @@ from doc2md.analysis.segmenter import (
     _is_all_caps_heading,
     _is_boilerplate,
     _is_figure_panel_label,
+    _is_math_expression,
     _line_starts_with_superscript_number,
     _rejoin_lines,
     _split_footnote_block,
@@ -24,6 +25,23 @@ def _text_block(text, size=10.0, y=100):
             "spans": [{"text": text, "size": size, "font": "TestFont", "flags": 0}],
         }],
     }
+
+
+def _font_block(text, font, size=10.0, y=100):
+    return {
+        "type": 0,
+        "bbox": (0, y, 500, y + 20),
+        "lines": [{
+            "spans": [{"text": text, "size": size, "font": font, "flags": 0}],
+        }],
+    }
+
+
+_HEADING_FONT = "HeadingFont"
+_HEADING_FONT_PROFILE = FontProfile(
+    body_size=10.0, footnote_size=8.0, heading_sizes=[16.0],
+    heading_fonts={_HEADING_FONT},
+)
 
 
 def _superscript_block(fn_num, body_text, fn_size=5.6, body_size=8.0, y=500):
@@ -452,3 +470,62 @@ class TestSegmentRawText:
     def test_page_index_set(self):
         result = segment_raw_text("text", 3)
         assert result[0].page_index == 3
+
+
+class TestIsMathExpression:
+    def test_equation_with_equals(self):
+        assert _is_math_expression("zi j = xi j \u2212 x\u0304i")
+        assert _is_math_expression("I = N")
+        assert _is_math_expression("Pf = FW T")
+        assert _is_math_expression("s(i) =")
+
+    def test_typeset_minus(self):
+        # U+2212 minus sign, distinct from ASCII hyphen
+        assert _is_math_expression("\u03A3i(xi \u2212 x\u0304)2")
+
+    def test_math_hat_tilde(self):
+        assert _is_math_expression("\u02C6N = N")   # ˆN
+        assert _is_math_expression("\u02DCDc,i = 1\u2212e")  # ˜Dc,i
+
+    def test_greek_letters(self):
+        assert _is_math_expression("\u03A3i xi")   # Σi xi
+        assert _is_math_expression("\u03B1 + \u03B2")  # α + β
+
+    def test_real_headings_not_math(self):
+        assert not _is_math_expression("Introduction")
+        assert not _is_math_expression("Results and Discussion")
+        assert not _is_math_expression("STAR Methods")
+        assert not _is_math_expression("Reference")
+
+
+class TestHeadingFontBranchFilters:
+    """Verify that the heading-font branch rejects panel labels and math."""
+
+    def _hf(self, text, size=10.0):
+        return _font_block(text, _HEADING_FONT, size=size)
+
+    def test_real_heading_promoted(self):
+        result = segment_page_blocks([self._hf("Introduction")], 0, _HEADING_FONT_PROFILE)
+        assert len(result) == 1
+        assert result[0].block_type == "heading"
+
+    def test_panel_label_single_letter_filtered(self):
+        result = segment_page_blocks([self._hf("A")], 0, _HEADING_FONT_PROFILE)
+        assert result == []
+
+    def test_panel_label_fraction_filtered(self):
+        result = segment_page_blocks([self._hf("2/24")], 0, _HEADING_FONT_PROFILE)
+        assert result == []
+
+    def test_math_with_equals_filtered(self):
+        result = segment_page_blocks([self._hf("zi j = xi j \u2212 x\u0304i")], 0, _HEADING_FONT_PROFILE)
+        assert result == []
+
+    def test_math_hat_filtered(self):
+        result = segment_page_blocks([self._hf("\u02C6N = N")], 0, _HEADING_FONT_PROFILE)
+        assert result == []
+
+    def test_math_at_large_size_filtered(self):
+        # Math in large font (dom_size > body_size + 1.0 branch)
+        result = segment_page_blocks([self._hf("s(i) =", size=16.0)], 0, _HEADING_FONT_PROFILE)
+        assert result == []

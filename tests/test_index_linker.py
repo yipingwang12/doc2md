@@ -470,6 +470,65 @@ class TestLinkIndex:
         assert "greek_mathematics" in text
 
 
+# --- Year-as-page-ref filtering ---
+
+class TestYearFiltering:
+    """Years embedded in index terms (e.g. 'British Anatomy Act of 1832, 269')
+    should not be linked as page references."""
+
+    def _make_year_volume(self, tmp_path):
+        vol = tmp_path / "volume"
+        ch = vol / "010_pp_200_662_medicine"
+        ch.mkdir(parents=True)
+        (ch / "chapter_01_.md").write_text("# Medicine\n\nBritish Anatomy Act study.\n")
+        idx = vol / "020_pp_663_700_index"
+        idx.mkdir()
+        (idx / "chapter_01_index.md").write_text(
+            "# INDEX\n\nBritish Anatomy Act of 1832, 269\n"
+        )
+        return vol
+
+    def test_year_not_treated_as_ref(self, tmp_path):
+        """1832 exceeds max page (662) — must not appear as a standalone ref number."""
+        vol = self._make_year_volume(tmp_path)
+        result = link_index(vol)
+        assert result is not None
+        text = result.read_text()
+        # "British Anatomy Act of, 1832," is the wrong form — year should stay in term
+        assert "British Anatomy Act of," not in text
+
+    def test_year_reattached_to_term(self, tmp_path):
+        """Year stripped by the ref parser must be reattached to the term."""
+        vol = self._make_year_volume(tmp_path)
+        result = link_index(vol)
+        assert result is not None
+        text = result.read_text()
+        assert "British Anatomy Act of 1832" in text
+
+    def test_valid_page_ref_still_linked(self, tmp_path):
+        """The real page ref (269, within max_page) must still be linked."""
+        vol = self._make_year_volume(tmp_path)
+        result = link_index(vol)
+        assert result is not None
+        text = result.read_text()
+        assert "[269]" in text
+
+    def test_normal_refs_unaffected(self, tmp_path):
+        """Refs within the volume range must not be filtered."""
+        vol = tmp_path / "volume"
+        ch = vol / "010_pp_1_100_topic"
+        ch.mkdir(parents=True)
+        (ch / "chapter_01_.md").write_text("# Topic\n\nText about algebra.\n")
+        idx = vol / "020_pp_101_120_index"
+        idx.mkdir()
+        (idx / "chapter_01_index.md").write_text(
+            "# INDEX\n\nalgebra, 50\n"
+        )
+        result = link_index(vol)
+        assert result is not None
+        text = result.read_text()
+        assert "[50]" in text
+
 # --- Pageless linking tests ---
 
 

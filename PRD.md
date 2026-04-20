@@ -468,9 +468,9 @@ Saves original index as `.orig.md` on first run. Subsequent runs always read fro
 
 ### Known issues
 
-1. **V4 semicolon-delimited format** — v4's index uses semicolons to separate sub-topics within flowing multi-line entries. The newline-based parser mishandles these, producing 113 corrupt "See also" lines. Needs a semicolon-aware sub-entry parser.
+1. **V4 semicolon-delimited format** — v4's index `.orig.md` was corrupted by a previous buggy run (linked output was saved back as the original). The parser is now correct for new extractions; v4 needs re-extraction from the PDF to regenerate a clean index.
 
-2. **Years parsed as page numbers** — entries like `"French Revolution, 1789"` have the year extracted as a page ref. Affects v6/v7/v8 where max page < 900. Fix: filter refs exceeding the volume's max page number.
+2. ~~**Years parsed as page numbers**~~ — fixed: `_filter_year_refs()` in `link_index` computes `max_page = max(ch.page_end for ch in chapters)` and moves refs exceeding that threshold back into the term text (e.g. "British Anatomy Act of 1832, 269" → term "British Anatomy Act of 1832", ref [269]).
 
 3. **Unmatched generic sub-entries** — terms like "overview", "general discussion", "in optics" don't appear verbatim in chapter text (~15–20% of refs). Correctly left as plain text by the conservative matching approach.
 
@@ -531,7 +531,7 @@ Two complementary tools; use in cascade:
 
 **BERN2** (fallback): processes arbitrary text via HTTP API or local install; ~55 min for 200 papers via API (use local install for bulk). Better than PubTator on diseases (F1 88.6 vs 79.2) and chemicals (92.8 vs 81.9). Covers 9 entity types vs PubTator's 6 (adds cell types, DNA/RNA). Use for papers not in PMC or to supplement PubTator on entity types it undershoots.
 
-Neither tool handles experimental methods (CRISPR, ChIP-seq, etc.) well — this class of entity requires custom extraction (regex + Ollama).
+Neither tool handles experimental methods (CRISPR, ChIP-seq, etc.) well. **Regex layer implemented** (`papers/ner/methods.py`): 35-pattern vocabulary covering sequencing methods (scRNA-seq, ChIP-seq, ATAC-seq, CITE-seq, etc.), CRISPR variants (specific-before-general ordering), spatial transcriptomics (Visium, seqFISH, STARmap), RNAi, flow cytometry, and computational methods (UMAP, t-SNE, PCA, CCA). Runs on abstract/introduction/methods/results sections; skips references/discussion. Ollama hook for complex protocol extraction is future work.
 
 ### Cross-paper entity index
 
@@ -557,11 +557,11 @@ Stages: PyMuPDF extract → two-column reflow → normalize ligatures → strip 
 
 **Metadata enrichment** (`papers/metadata.py`): four-source cascade (PDF metadata → first-page font heuristics → PubMed efetch XML → CrossRef REST API), each source only fills empty fields.
 
-**Figure extraction** (`papers/figure_extractor.py`): raster images via `get_images(full=True)` + `extract_image(xref)` (skip < 150px); vector fallback via `get_pixmap(clip=bbox)` on type-1 image blocks; caption matched as nearest text block starting with "Figure"/"Fig." within 150pt. Saves to `output_dir/figures/` with `figures.json` index.
+**Figure extraction** (`papers/figure_extractor.py`): raster images via `get_images(full=True)` + `extract_image(xref)` (skip < 150px); vector fallback via `get_pixmap(clip=bbox)` on type-1 image blocks; caption matched as nearest text block starting with "Figure"/"Fig." within 150pt. Per-page deduplication: when multiple images share the same caption ID, the largest (by area) wins; uncaptioned subpanels are dropped when any captioned figure exists on the page (kept with fallback IDs `p{page}i{idx}` only on fully uncaptioned pages). Saves to `output_dir/figures/` with `figures.json` index.
 
 **Preprint watermark filter**: strips bioRxiv/medRxiv CC-BY notices from `raw_text` (cleaner) and from block dicts (segmenter). Also strips symbol-only lines (U+25CF ●, U+2022 •, etc.) that are PDF encoding artifacts from data tables/figures — both in `strip_preprint_watermarks()` and in `_is_boilerplate()`.
 
-**Figure panel label filter**: single-letter or N/M fraction blocks (e.g. "A", "2/24") detected by `_is_figure_panel_label()` and dropped before heading classification.
+**Figure panel label filter**: single-letter or N/M fraction blocks (e.g. "A", "2/24") detected by `_is_figure_panel_label()` and dropped before heading classification. **Math expression filter** (`_is_math_expression()`): blocks containing `=`, `−`, `ˆ`, `˜`, or Unicode Greek/math symbols are also dropped — prevents equation fragments (e.g. `zi j = xi j − x̄i`) from being misclassified as headings via the heading-font branch.
 
 ### Processing log: Stuart et al. 2019 (Seurat v3)
 

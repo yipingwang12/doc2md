@@ -136,21 +136,40 @@ def extract_figures_from_pdf(
 
     doc = fitz.open(str(pdf_path))
     results: list[dict] = []
-    idx_counter: dict[int, int] = {}  # page → count for fallback IDs
 
     for page_num in range(len(doc)):
         page = doc[page_num]
 
-        raw_figures = _extract_raster(doc, page, figures_dir, page_num, dpi)
-        if not raw_figures:
-            raw_figures = _extract_vector_fallback(page, figures_dir, page_num, dpi)
+        raw = _extract_raster(doc, page, figures_dir, page_num, dpi)
+        if not raw:
+            raw = _extract_vector_fallback(page, figures_dir, page_num, dpi)
 
-        page_idx = idx_counter.get(page_num, 0)
-        for fig in raw_figures:
-            bbox = fig["_bbox"]
-            figure_id, caption = _find_caption(page, bbox)
-            if figure_id is None:
-                figure_id = f"p{page_num + 1}i{page_idx}"
+        # Attach caption and area to each raw figure
+        for fig in raw:
+            fig["_figure_id"], fig["_caption"] = _find_caption(page, fig["_bbox"])
+            fig["_area"] = fig["_bbox"].width * fig["_bbox"].height
+
+        captioned = [f for f in raw if f["_figure_id"]]
+        uncaptioned = [f for f in raw if not f["_figure_id"]]
+
+        # Deduplicate captioned: keep the largest image per figure_id
+        best: dict[str, dict] = {}
+        for fig in captioned:
+            fid = fig["_figure_id"]
+            if fid not in best or fig["_area"] > best[fid]["_area"]:
+                best[fid] = fig
+
+        # Drop uncaptioned subpanels when there are captioned figures on the page
+        if best:
+            to_write = list(best.values())
+        else:
+            to_write = [
+                {**fig, "_figure_id": f"p{page_num + 1}i{i}"}
+                for i, fig in enumerate(uncaptioned)
+            ]
+
+        for fig in to_write:
+            figure_id = fig["_figure_id"]
             ext = fig["_ext"]
             img_filename = f"figure_{figure_id}.{ext}"
             img_path = figures_dir / img_filename
@@ -163,11 +182,9 @@ def extract_figures_from_pdf(
             results.append({
                 "figure_id": figure_id,
                 "image_path": f"figures/{img_filename}",
-                "caption": caption or "",
+                "caption": fig["_caption"] or "",
                 "page": page_num + 1,
             })
-            page_idx += 1
-        idx_counter[page_num] = page_idx
 
     doc.close()
     return results

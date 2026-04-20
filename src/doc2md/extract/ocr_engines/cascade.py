@@ -32,6 +32,8 @@ def default_quality_check(
     - fewer than `min_lines` recognized lines
     - more than `max_non_printable_ratio` non-printable characters in the text
     """
+    if not result.page.raw_text:
+        return True  # image-only page, not an engine failure
     if result.confidence < min_confidence:
         return False
     if result.line_count < min_lines:

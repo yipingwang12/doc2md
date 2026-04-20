@@ -405,6 +405,12 @@ class TestDefaultQualityCheck:
         assert default_quality_check(r) is False
         assert default_quality_check(r, min_confidence=0.5, min_lines=2) is True
 
+    def test_accepts_image_only_page(self):
+        # Empty text = image-only page, not an engine failure — accept regardless
+        # of confidence/line_count so the cascade doesn't escalate unnecessarily.
+        r = _fake_result(Path("/a.png"), "", 0.0, 0)
+        assert default_quality_check(r) is True
+
 
 class TestCascadeEngine:
     def test_requires_at_least_one_stage(self):

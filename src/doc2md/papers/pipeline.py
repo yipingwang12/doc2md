@@ -38,6 +38,7 @@ from doc2md.papers.index_builder import (
 from doc2md.papers.metadata import enrich_metadata
 from doc2md.papers.models import NamedEntity, PaperDocument, PaperMetadata
 from doc2md.papers.ner.bern2 import annotate_text
+from doc2md.papers.ner.methods import extract_method_entities
 from doc2md.papers.ner.normalizer import deduplicate_entities, merge_entity_sources
 from doc2md.papers.ner.pubtator import fetch_entities_by_pmid
 from doc2md.papers.section_classifier import label_blocks_by_section
@@ -198,6 +199,12 @@ def process_paper(
     # Stage 8: NER
     paper_doc = PaperDocument(source_name=doc_name, metadata=metadata, pages=pages, chapters=assembled)
     paper_doc.entities = _run_ner(paper_doc, labelled, config)
+
+    method_entities = [
+        e for block, label in labelled
+        for e in extract_method_entities(block.text, label)
+    ]
+    paper_doc.entities = deduplicate_entities(paper_doc.entities + method_entities)
     logger.info("NER: %d entities for %s", len(paper_doc.entities), doc_name)
 
     # Stage 9: Write entities.json

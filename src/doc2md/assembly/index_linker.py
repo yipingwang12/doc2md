@@ -87,6 +87,21 @@ def _split_term_and_refs(line: str) -> tuple[str, str]:
     return line.rstrip(", "), ""
 
 
+def _filter_year_refs(entries: list[IndexEntry], max_page: int) -> list[IndexEntry]:
+    """Move page refs exceeding max_page (e.g. years like 1832) back into term text."""
+    for entry in entries:
+        years = [r for r in entry.page_refs if r.start > max_page]
+        entry.page_refs = [r for r in entry.page_refs if r.start <= max_page]
+        if years:
+            entry.term = entry.term.rstrip(", ") + " " + " ".join(r.label() for r in years)
+        for sub in entry.sub_entries:
+            years = [r for r in sub.page_refs if r.start > max_page]
+            sub.page_refs = [r for r in sub.page_refs if r.start <= max_page]
+            if years:
+                sub.term = sub.term.rstrip(", ") + " " + " ".join(r.label() for r in years)
+    return entries
+
+
 def _is_sub_entry(line: str) -> bool:
     """Heuristic: sub-entries start with lowercase or known patterns."""
     if not line:
@@ -576,6 +591,11 @@ def link_index(volume_dir: Path) -> Path | None:
     entries = parse_index_md(text)
     if not entries:
         return None
+
+    if not pageless:
+        max_page = max((ch.page_end for ch in chapters), default=0)
+        if max_page > 0:
+            entries = _filter_year_refs(entries, max_page)
 
     if pageless:
         linked = render_linked_index_pageless(entries, chapters, index_file.parent.name)

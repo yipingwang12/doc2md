@@ -220,6 +220,15 @@ def _is_all_caps_heading(text: str) -> bool:
 
 
 _MATH_SYMBOLS_RE = re.compile(r"[α-ωΑ-Ω∑∏∫√≤≥≠±×÷∈∉⊂⊃∪∩→←↔∞]")
+_MATH_EXPRESSION_RE = re.compile(
+    r"[=\u2212\u02C6\u02DC]"       # =, − (typeset minus), ˆ (hat), ˜ (tilde)
+    r"|[α-ωΑ-Ω∑∏∫√≤≥≠±×÷∈∉⊂⊃∪∩→←↔∞]"  # Greek letters and math operators
+)
+
+
+def _is_math_expression(text: str) -> bool:
+    """Return True if text looks like a mathematical expression rather than a heading."""
+    return bool(_MATH_EXPRESSION_RE.search(text.strip()))
 
 
 def _is_prose_fragment(line: str) -> bool:
@@ -302,7 +311,7 @@ def _classify_block(
 
     # Heading: larger font than body text
     if dom_size > profile.body_size + 1.0 and len(text) < 200:
-        if _is_figure_panel_label(text):
+        if _is_figure_panel_label(text) or _is_math_expression(text):
             return []
         level = 1
         if profile.heading_sizes:
@@ -335,6 +344,8 @@ def _classify_block(
     ):
         dom_font = _dominant_font(block)
         if dom_font in profile.heading_fonts:
+            if _is_figure_panel_label(text) or _is_math_expression(text):
+                return []
             return [TextBlock(
                 text=text,
                 block_type="heading",
