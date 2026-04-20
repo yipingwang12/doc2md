@@ -48,12 +48,15 @@ doc2md-reader          # launch desktop e-book reader (PyWebView)
 
 `src/doc2md/desktop.py` — PyWebView wrapper around the `reader/` web UI. Starts an embedded `http.server` on a free port and opens a native macOS window (WKWebView).
 
-**Build alias .app bundle (no interpreter bundled, ~228 KB):**
-```sh
-cd _desktop_build
-../.venv/bin/python setup.py py2app --alias
-# → dist/doc2md Reader.app
+**Desktop .app bundle** (`~/Desktop/doc2md Reader.app`) — hand-crafted bundle (same pattern as Quiz.app): bash script launcher + `Info.plist` + custom icon. No py2app needed.
+
+```
+~/Desktop/doc2md Reader.app/
+  Contents/MacOS/doc2md Reader   # bash: cd repo && exec .venv/bin/doc2md-reader
+  Contents/Resources/doc2md-reader.icns
+  Contents/Info.plist
 ```
 
-- `_desktop_build/setup.py` — isolated from `pyproject.toml` to avoid py2app 0.28 `install_requires` conflict
+- `assets/doc2md-reader.icns` — Pillow-generated icon (navy bg, document page with corner fold + teal arrow). Regenerate with `python scripts/make_icons.py` from the Projects root.
+- `_desktop_build/setup.py` — isolated from `pyproject.toml` to avoid py2app 0.28 `install_requires` conflict; kept for py2app alias builds if needed
 - `reader/vendor/` — bundled `markdown-it.min.js` + `markdown-it-footnote.min.js` for offline use (no CDN dependency)
