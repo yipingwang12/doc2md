@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,6 +110,12 @@ def load_config(path: Path | None = None) -> Config:
         for k, v in data["processing"].items():
             if hasattr(config.processing, k):
                 setattr(config.processing, k, v)
+
+    # Env vars override config.toml; canonical values in ~/Documents/Projects/.env
+    if base_url := os.getenv("OLLAMA_BASE_URL"):
+        config.llm.base_url = base_url
+    if model := os.getenv("OLLAMA_MODEL"):
+        config.llm.model = model
 
     if "papers" in data:
         papers_data = data["papers"]
