@@ -529,3 +529,37 @@ class TestHeadingFontBranchFilters:
         # Math in large font (dom_size > body_size + 1.0 branch)
         result = segment_page_blocks([self._hf("s(i) =", size=16.0)], 0, _HEADING_FONT_PROFILE)
         assert result == []
+
+
+class TestAllCapsBranchMathFilter:
+    """ALL_CAPS branch must also reject math expressions (e.g. 'C = BW T', 'I = N')."""
+
+    def _body_block(self, text: str) -> dict:
+        """Block at body size in non-heading font — triggers ALL_CAPS branch."""
+        return {
+            "type": 0,
+            "bbox": (0, 0, 400, 15),
+            "lines": [{"spans": [{"text": text, "size": 10.0, "font": "NimbusRomNo9L-Regu", "bbox": (0, 0, 400, 15)}]}],
+        }
+
+    _profile = FontProfile(
+        heading_sizes=[14.0, 12.0],
+        body_size=10.0,
+        footnote_size=8.0,
+        heading_fonts=set(),
+    )
+
+    def test_cca_equation_not_heading(self):
+        """'C = BW T' is all-uppercase letters but is a math equation, not a heading."""
+        result = segment_page_blocks([self._body_block("C = BW T")], 0, self._profile)
+        assert not any(b.block_type == "heading" for b in result)
+
+    def test_morans_i_equation_not_heading(self):
+        """'I = N' is all-uppercase but is a math equation, not a heading."""
+        result = segment_page_blocks([self._body_block("I = N")], 0, self._profile)
+        assert not any(b.block_type == "heading" for b in result)
+
+    def test_real_all_caps_heading_passes(self):
+        """'INTRODUCTION' is a genuine ALL_CAPS heading and must not be filtered."""
+        result = segment_page_blocks([self._body_block("INTRODUCTION")], 0, self._profile)
+        assert any(b.block_type == "heading" for b in result)

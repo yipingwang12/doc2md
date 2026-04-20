@@ -328,6 +328,8 @@ def _classify_block(
 
     # Heading: ALL CAPS body-sized text (section headings)
     if _is_all_caps_heading(text) and abs(dom_size - profile.body_size) < 1.5:
+        if _is_math_expression(text):
+            return []
         return [TextBlock(
             text=text,
             block_type="heading",
