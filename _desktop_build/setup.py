@@ -17,6 +17,7 @@ _REPO = Path(__file__).resolve().parent.parent
 APP = [str(_REPO / 'src' / 'doc2md' / 'desktop.py')]
 OPTIONS = {
     'argv_emulation': False,
+    'iconfile': str(_REPO / 'assets' / 'doc2md-reader.icns'),
     'dist_dir': str(_REPO / 'dist'),
     'plist': {
         'CFBundleName': 'doc2md Reader',
