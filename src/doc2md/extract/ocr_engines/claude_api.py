@@ -11,6 +11,13 @@ cascade quality check uses line_count instead for image-only detection.
 Batch API mode is used automatically when len(items) > BATCH_THRESHOLD (10).
 It submits all requests at once and polls with exponential backoff (60s base),
 returning results in the original order. Cost is 50% lower than real-time.
+
+Two-model cascade (ocr_batch_cascade):
+  Run all pages through a cheap primary model (default: Haiku); re-run
+  failures through an escalation model (default: self.model = Sonnet).
+  Quality gate rejects: (a) summary/refusal responses, (b) suspected
+  footnote-definition hallucinations (≤3 [^N]: lines on a short page).
+  Typical cost: ~$0.40 for 418 pages vs $1.78 Sonnet-only.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from __future__ import annotations
 import base64
 import io
 import os
+import re
 import time
 from pathlib import Path
 
@@ -30,6 +38,39 @@ BATCH_THRESHOLD = 10
 _BATCH_CHUNK = 50     # max images per Batch API submission (keeps POST body < ~100 MB)
 _POLL_BASE = 60       # seconds — first poll delay
 _POLL_MAX = 600       # seconds — cap on poll interval
+
+# --- Quality gate patterns ---
+
+_SUMMARY_RE = re.compile(
+    r"^(Here is a (summary|brief summary)|Here's a (summary|brief summary)"
+    r"|This appears to be|I can provide a summary"
+    r"|rather than a verbatim|The passage describes|The author describes)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FN_DEF_RE = re.compile(r"^\[\^\d+\]:", re.MULTILINE)
+
+# Max footnote-def lines / max total lines to flag as hallucination
+_FN_DEF_MAX = 3
+_FN_DEF_LINE_THRESHOLD = 30
+
+
+def quality_ok(result: OcrResult) -> bool:
+    """Return False if result should be escalated to a stronger model.
+
+    Rejects:
+    - Summary or refusal responses (model paraphrased instead of transcribing)
+    - Suspected footnote-definition hallucinations: ≤3 [^N]: lines on a page
+      with fewer than 30 total lines (real Notes pages have many more lines)
+    """
+    text = (result.page.raw_text or "").strip()
+    if not text:
+        return True  # image-only page — nothing to escalate
+    if _SUMMARY_RE.search(text):
+        return False
+    fn_defs = _FN_DEF_RE.findall(text)
+    if fn_defs and len(fn_defs) <= _FN_DEF_MAX and result.line_count < _FN_DEF_LINE_THRESHOLD:
+        return False
+    return True
 
 _PROMPT = """\
 Transcribe every word on this book page verbatim into Markdown. Do NOT summarize or paraphrase.
@@ -83,6 +124,73 @@ class ClaudeApiEngine:
         if use_batch:
             return self._ocr_batch_api(items, auto_number=auto_number)
         return self._ocr_realtime(items, auto_number=auto_number)
+
+    def ocr_batch_cascade(
+        self,
+        items: list[tuple[Image.Image, Path]],
+        *,
+        primary_model: str = "claude-haiku-4-5-20251001",
+        primary_max_tokens: int = 2048,
+        auto_number: bool = False,
+    ) -> tuple[list[OcrResult], dict[str, int]]:
+        """Two-stage cascade: primary_model first, self.model for quality failures.
+
+        Returns (results, token_counts) where token_counts has keys:
+        primary_input, primary_output, escalation_input, escalation_output.
+        Results are in the same order as items.
+        """
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+        # --- Stage 1: primary model (Haiku) ---
+        primary_engine = ClaudeApiEngine(
+            model=primary_model,
+            max_tokens=primary_max_tokens,
+            api_key=self._api_key,
+            use_batch=self.use_batch,
+        )
+        print(f"  [cascade] stage 1: {primary_model} on {len(items)} pages", flush=True)
+        primary_results = primary_engine.ocr_batch(items, auto_number=False)
+
+        token_counts = {
+            "primary_input": primary_engine.total_input_tokens,
+            "primary_output": primary_engine.total_output_tokens,
+            "escalation_input": 0,
+            "escalation_output": 0,
+        }
+
+        # --- Identify failures ---
+        fail_indices = [i for i, r in enumerate(primary_results) if not quality_ok(r)]
+        print(
+            f"  [cascade] {len(fail_indices)}/{len(items)} pages failed quality gate "
+            f"→ escalating to {self.model}",
+            flush=True,
+        )
+
+        # --- Stage 2: escalation model (Sonnet) on failures ---
+        results = list(primary_results)
+        if fail_indices:
+            fail_items = [items[i] for i in fail_indices]
+            escalation_engine = ClaudeApiEngine(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                api_key=self._api_key,
+                use_batch=self.use_batch,
+            )
+            escalation_results = escalation_engine.ocr_batch(fail_items, auto_number=False)
+            token_counts["escalation_input"] = escalation_engine.total_input_tokens
+            token_counts["escalation_output"] = escalation_engine.total_output_tokens
+            for idx, result in zip(fail_indices, escalation_results):
+                results[idx] = result
+
+        # Re-apply page numbers if requested
+        if auto_number:
+            for i, r in enumerate(results):
+                r.page.page_number = i + 1
+
+        self.total_input_tokens = token_counts["primary_input"] + token_counts["escalation_input"]
+        self.total_output_tokens = token_counts["primary_output"] + token_counts["escalation_output"]
+        return results, token_counts
 
     # ------------------------------------------------------------------
     # Real-time path
