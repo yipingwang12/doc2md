@@ -72,16 +72,7 @@ def quality_ok(result: OcrResult) -> bool:
         return False
     return True
 
-_PROMPT = """\
-Transcribe every word on this book page verbatim into Markdown. Do NOT summarize or paraphrase.
-- Headings: use # / ## / ### based on apparent visual hierarchy
-- Body text: reproduce word-for-word, joining hyphenated line-breaks
-- Footnote markers in body text: keep inline as `[^N]`
-- Footnote definitions: emit as `[^N]: text` ONLY if the full footnote text is visible on this page; never invent placeholder definitions
-- Figure captions: emit as `> caption text`
-- Page numbers, running headers/footers: omit
-- Purely decorative images with no text: output nothing
-Output only the Markdown, no preamble or explanation."""
+from doc2md.extract.ocr_engines.prompts import BASE_PROMPT
 
 
 class ClaudeApiEngine:
@@ -90,6 +81,8 @@ class ClaudeApiEngine:
     use_batch=None  → auto: real-time for ≤10 pages, Batch API for >10
     use_batch=True  → always use Batch API
     use_batch=False → always use real-time
+
+    prompt defaults to BASE_PROMPT; pass build_prompt(book) for book-specific instructions.
     """
 
     name = "claude_api"
@@ -100,11 +93,13 @@ class ClaudeApiEngine:
         max_tokens: int = 2048,
         api_key: str | None = None,
         use_batch: bool | None = None,
+        prompt: str | None = None,
     ):
         self.model = model
         self.max_tokens = max_tokens
         self._api_key = api_key
         self.use_batch = use_batch
+        self._prompt = prompt if prompt is not None else BASE_PROMPT
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
@@ -148,6 +143,7 @@ class ClaudeApiEngine:
             max_tokens=primary_max_tokens,
             api_key=self._api_key,
             use_batch=self.use_batch,
+            prompt=self._prompt,
         )
         print(f"  [cascade] stage 1: {primary_model} on {len(items)} pages", flush=True)
         primary_results = primary_engine.ocr_batch(items, auto_number=False)
@@ -176,6 +172,7 @@ class ClaudeApiEngine:
                 max_tokens=self.max_tokens,
                 api_key=self._api_key,
                 use_batch=self.use_batch,
+                prompt=self._prompt,
             )
             escalation_results = escalation_engine.ocr_batch(fail_items, auto_number=False)
             token_counts["escalation_input"] = escalation_engine.total_input_tokens
@@ -233,7 +230,7 @@ class ClaudeApiEngine:
         response = client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=[{"role": "user", "content": _image_message(image)}],
+            messages=[{"role": "user", "content": _image_message(image, self._prompt)}],
         )
         text = response.content[0].text
         return text, response.usage.input_tokens, response.usage.output_tokens
@@ -265,7 +262,7 @@ class ClaudeApiEngine:
                     "params": {
                         "model": self.model,
                         "max_tokens": self.max_tokens,
-                        "messages": [{"role": "user", "content": _image_message(img)}],
+                        "messages": [{"role": "user", "content": _image_message(img, self._prompt)}],
                     },
                 }
                 for i, (img, _) in enumerate(chunk)
@@ -345,7 +342,7 @@ class ClaudeApiEngine:
         return anthropic.Anthropic(api_key=self._api_key, http_client=http_client)
 
 
-def _image_message(image: Image.Image) -> list[dict]:
+def _image_message(image: Image.Image, prompt: str) -> list[dict]:
     """Build the content list for a single-image user message."""
     return [
         {
@@ -356,7 +353,7 @@ def _image_message(image: Image.Image) -> list[dict]:
                 "data": _encode_image(image),
             },
         },
-        {"type": "text", "text": _PROMPT},
+        {"type": "text", "text": prompt},
     ]
 
 

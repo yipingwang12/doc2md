@@ -35,6 +35,7 @@ from doc2md.extract.chrome_cropper import detect_content_bounds, crop_image
 from doc2md.extract.ocr_extract import _get_image_files
 from doc2md.extract.screenshot_extract import is_libby_spread
 from doc2md.extract.ocr_engines.claude_api import ClaudeApiEngine
+from doc2md.extract.ocr_engines.prompts import build_prompt, KNOWN_BOOKS
 
 # Batch API pricing (50% off real-time)
 _PRICING = {
@@ -102,6 +103,10 @@ def main() -> None:
         "--cascade", action="store_true",
         help="Haiku first, Sonnet only for quality failures (cheaper)",
     )
+    parser.add_argument(
+        "--book", default=None, metavar="KEY",
+        help=f"Book-specific prompt additions. Known keys: {', '.join(KNOWN_BOOKS)}",
+    )
     args = parser.parse_args()
 
     folder = args.folder.expanduser().resolve()
@@ -121,7 +126,13 @@ def main() -> None:
         flush=True,
     )
 
-    engine = ClaudeApiEngine(use_batch=True)  # Sonnet, Batch API
+    prompt = build_prompt(args.book)
+    if args.book:
+        print(f"[{_ts()}] Prompt: {args.book} (tailored)", flush=True)
+    else:
+        print(f"[{_ts()}] Prompt: base", flush=True)
+
+    engine = ClaudeApiEngine(use_batch=True, prompt=prompt)  # Sonnet, Batch API
     t0 = time.monotonic()
 
     if args.cascade:
@@ -176,6 +187,7 @@ def main() -> None:
     summary = {
         "folder":    str(folder),
         "mode":      mode,
+        "book":      args.book,
         "ocr_mode":  "cascade" if args.cascade else "sonnet-only",
         "pages":     len(results),
         "cost_usd":  round(total_cost, 4),
