@@ -32,18 +32,18 @@ class ChapterDef:
 # --- Patterns for chapter boundary detection ---
 
 # PART N Title (may wrap to next line)
-_PART_RE = re.compile(r"^PART\s+(\d+)\s+(.+)$", re.IGNORECASE)
-# Named front/back matter sections (bold or plain)
+_PART_RE = re.compile(r"^(?:#+\s*)?PART\s+(\d+)\s+(.+)$", re.IGNORECASE)
+# Named front/back matter sections (bold or plain, with optional markdown heading)
 _NAMED_SECTION_RE = re.compile(
-    r"^(?:<b>)?(Preface|Acknowledgments|Introduction|Notes|Bibliography|Index)(?:</b>)?$",
+    r"^(?:#+\s*)?(?:<b>)?(Preface|Acknowledgments|Introduction|Notes|Bibliography|Index)(?:</b>)?$",
 )
 # CONCLUSION. Title or APPENDIX. Title (may wrap)
 _TITLED_SECTION_RE = re.compile(
-    r"^(CONCLUSION|APPENDIX|AFTERWORD|FOREWORD|EPILOGUE|PROLOGUE)[.\s:]+(.+)$",
+    r"^(?:#+\s*)?(CONCLUSION|APPENDIX|AFTERWORD|FOREWORD|EPILOGUE|PROLOGUE)[.\s:]+(.+)$",
     re.IGNORECASE,
 )
 # TOC region markers
-_CONTENTS_RE = re.compile(r"^(?:<b>)?Contents(?:</b>)?$", re.IGNORECASE)
+_CONTENTS_RE = re.compile(r"^(?:#+\s*)?(?:<b>)?Contents(?:</b>)?$", re.IGNORECASE)
 
 _TAG_RE = re.compile(r"</?(?:b|i|math|sup)>")
 

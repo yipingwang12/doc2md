@@ -62,6 +62,10 @@ Commands:
               --context N         Surrounding paragraphs
 ```
 
+## Credentials
+
+`ANTHROPIC_API_KEY` — stored in `.env` at the repo root (git-ignored). Required for Claude API vision extraction (see Vision-Model Alternatives).
+
 ## Configuration (`config.toml`)
 
 | Section | Key | Default | Purpose |
@@ -133,6 +137,7 @@ class OcrEngine(Protocol):
 | `TesseractEngine` | `ocr_engines/tesseract.py` | Fastest on CPU (~0.2 sec/half-page on Boston); lightest thermal footprint; good on clean English | Poor on math, non-Latin scripts, complex layouts; no block metadata | `pytesseract` + `tesseract` binary |
 | `AppleVisionEngine` | `ocr_engines/apple_vision.py` | Fast on Apple Silicon Neural Engine; no GPU contention; handles layout automatically | macOS only; weaker on math/unusual fonts | `ocrmac` (macOS only) |
 | `SuryaEngine` | `ocr_engines/surya.py` | Most capable on math, non-Latin scripts, unusual layouts; provides rich block metadata that powers font-based classification | Slowest; thermal-stress under sustained CPU load; best with GPU/MPS | `surya-ocr` (core dep) |
+| `ClaudeApiEngine` | `ocr_engines/claude_api.py` | Frontier model; structure-preserving markdown in one pass; zero local compute; no thermal risk | Requires internet + API key; ~$0.003–0.004/page at Sonnet pricing; copyright refusals on some narrative pages at reduced resolution; Haiku hallucinates footnote defs | `anthropic`, `httpx` |
 | `CascadeEngine` | `ocr_engines/cascade.py` | Runs multiple engines in order with per-page quality gating — only escalates to the next engine on pages that fail the check | — | n/a |
 
 ### Default cascade
@@ -235,6 +240,18 @@ Cascade stages missing their Python dependency are silently skipped at runtime; 
   3. **Image-only pages cascade through all three engines** — `default_quality_check(min_lines=3)` rejects Tesseract results with zero or one line, so genuine image-only pages (e.g. the cover) get re-tried by Apple Vision, then Surya, before the final Surya result (empty) is accepted. Wastes a few seconds per image-only page but does not affect correctness.
 - **Safety**: the original `results/boston_artifacts/` split is untouched; the cascade writes to a different directory because `doc_name` comes from `path.name` (`a_history_of_boston_in_50_artifacts`) rather than the custom-named `boston_artifacts` folder.
 
+### A History of Boston in 50 Artifacts — Claude API run
+
+- **Source**: same 209 spreads (418 half-pages, 1512×1642 px each) as above
+- **Engine**: `ClaudeApiEngine(model="claude-sonnet-4-6", use_batch=True)` — 9 sub-batches of ≤50 images, polled with 60s base interval
+- **Re-runs**: 33 Sonnet refusal pages re-run via `rerun_summary_pages.py` with `ClaudeApiEngine(model="claude-haiku-4-5-20251001", use_batch=False)` — all 33 fixed
+- **Cost**: $1.69 Sonnet Batch + $0.09 Haiku real-time = **$1.78 total**
+- **Assembly**: `assemble_boston_claude_api.py` — blank pages skipped, summary/refusal pages wrapped in HTML comments; output `results/boston_claude_api.orig/chapter_01_untitled.md`
+- **Word count**: 53,548 words (vs 53,260 Surya — within 0.5%)
+- **Split**: `doc2md split --artifacts --output-dir results/boston_claude_api` → **35 chapters** (3 named front matter, 5 PART intros removed, 24 artifact-level items, Conclusion, Appendix, Notes, Bibliography, Index)
+- **Index linking**: `doc2md link-index results/boston_claude_api` → **396 links** (vs 403 Surya) across 388 unique terms (vs 387 Surya)
+- **Quality vs Surya**: same word count; Claude outputs single-line index entries (665 lines) vs Surya's column-wrapped entries (917 lines); Claude correctly outputs 0 footnote definitions (no footnote text visible on Libby pages); Surya had 34 false `[^YEAR]:` definitions from bibliography entries
+
 ### Morocco: Globalization and Its Consequences (Cohen & Jaidi)
 
 - **Source**: 103 browser screenshots (1366×768, full-screen captures of VBooks web viewer with Ubuntu panel + Chrome tabs + dock visible), 38 MB
@@ -253,6 +270,42 @@ Cascade stages missing their Python dependency are silently skipped at runtime; 
 - **PDF control char encoding** — Cambridge UP PDFs encode Semitic transliteration characters (ayin ʿ, alef ʾ) as ASCII control codes U+0002/U+0003; cleaner maps these to Unicode modifier letters U+02BF/U+02BE
 - ~~**Cascade image-only page over-escalation**~~ — fixed: `default_quality_check` now returns `True` for empty `raw_text`, short-circuiting at Tesseract for image-only pages
 - **Cascade title-detection regression** — Tesseract and Apple Vision don't provide font metadata (block dicts), so their pages bypass `analysis/segmenter.py`'s font-based title/heading classification. Pages that would have been classified as headings via font size/name in a Surya-only run fall through to raw-text heuristics in the cascade run
+
+## Vision-Model Alternatives for Screenshot Extraction
+
+Evaluated as potential replacements for the OCR cascade (stages 2–6) on screenshot/scanned sources. Digital PDFs (Cambridge, papers) are unaffected — PyMuPDF remains optimal there.
+
+### Qwen2.5-VL 7B (local, via Ollama/MLX)
+
+- **Memory**: ~15–17 GB at Q4 on M3 Max (Ollama KV-cache bug inflates beyond weights-only ~4.4 GB); fits comfortably in 36 GB unified memory
+- **Speed**: ~7–17 sec/page (vision encoder + text generation at ~30–50 tok/sec on M3 Max); Boston 418 pages → ~60–120 min via Ollama; ~30–60 min via MLX (~2× faster)
+- **Thermal**: GPU/Metal path — comparable to Surya-on-MPS (which completed Morocco 103 pages in 16 min with zero throttling). CPU path not recommended.
+- **Accuracy**: DocVQA 95.7%; purpose-built for structured document extraction. Strong on raw character-level OCR and multi-column layouts. Instruction-following on nuanced formatting (footnote vs caption, heading hierarchy) is weaker at 7B.
+- **Pipeline simplification**: replaces OCR cascade + classifier (stages 2–5); assemble/output stages still needed
+
+### Claude API (claude-sonnet-4-6, Batch API)
+
+- **Speed**: ~2–4 sec/page real-time; Batch API (async, ≤24 hr) processes Boston 418 pp in ~90 min turnaround (submit-and-poll)
+- **Thermal**: zero local compute; no thermal risk
+- **Cost**: ~$0.004/page Sonnet real-time; **Batch API 50% discount** → Boston $1.69 Sonnet + $0.09 Haiku re-runs = **$1.78 total for 418 pages**
+- **Accuracy**: frontier model; excellent heading-classified markdown in one pass; eliminates cascade + classifier stages. Minor issues: some narrative pages trigger copyright refusals (re-run with Haiku); Haiku hallucinates footnote definitions despite prompt instructions
+- **Prompt**: verbatim transcription, headings via `#`/`##`/`###`, body word-for-word with hyphenation joining, footnote markers inline, footnote definitions only when visible on page, figure captions as blockquotes, omit page numbers/running headers
+- **Implementation notes**: proxy workaround (use `HTTPS_PROXY` via `httpx.HTTPTransport`, not `ALL_PROXY` which requires `socksio`); chunked into ≤50 images per Batch API POST to avoid proxy size limits; `BATCH_THRESHOLD=10` (auto-batch >10 pages)
+- **Constraints**: requires internet + API key; not local-first; image downscaling (0.5×, 0.75×) triggers copyright refusals on narrative pages — full resolution required
+
+### Recommendation
+
+| Criterion | Cascade (current) | Qwen2.5-VL | Claude API |
+|---|---|---|---|
+| Speed (Boston 418 pp) | ~7 min | ~60 min | ~90 min (batch) |
+| Thermal risk | Low (GPU path) | Low (GPU path) | None |
+| Cost | Free | Free | ~$1.78/book (Batch) |
+| Accuracy (raw OCR) | Good | Very good | Very good |
+| Structure output | Rule-based (regressions) | Prompt-based (weaker) | Prompt-based (strong) |
+| Local-first | Yes | Yes | No |
+| Pipeline stages replaced | 0 | 2–5 | 2–6 |
+
+Best fit by use case: cascade for bulk re-processing where speed matters; Claude API for new books where cascade has known regressions (Morocco body chapters, Boston title detection) and cost is acceptable; Qwen2.5-VL not recommended given speed regression vs cascade and accuracy regression vs Claude API.
 
 ## Future Work: OCR Cascade
 
@@ -412,7 +465,7 @@ Post-processing tool that splits a single-file markdown book into per-chapter di
 ### How it works
 
 1. **TOC detection** — finds "Contents" section, identifies duplicate markers (TOC vs body) to locate where body content begins
-2. **Section-level detection** — finds PART headers, named sections (Preface, Introduction, Notes, Bibliography, Index), titled sections (CONCLUSION, APPENDIX); handles wrapped multi-line titles and HTML tag stripping
+2. **Section-level detection** — finds PART headers, named sections (Preface, Introduction, Notes, Bibliography, Index), titled sections (CONCLUSION, APPENDIX); handles wrapped multi-line titles and HTML tag stripping; all patterns accept optional `(?:#+\s*)?` prefix to handle markdown heading-prefixed lines from Claude API output
 3. **Artifact-level detection** (`--artifacts`) — within PART sections, finds individual items via numbered headings (`N. Title`) or first figure references (`FIGURE N.1`); backs up to preceding blank line for figure-only splits; extracts titles from TOC and Appendix
 
 ### Directory naming
@@ -446,7 +499,9 @@ Falls back automatically: tries page-range mode first, pageless if no `_pp_` dir
 
 ### Index parsing
 
-`parse_index_md()` handles main entries, sub-entries, `(cont.)` continuations, abbreviated page ranges (`516–17` → 516–517), "See also" cross-refs, wrapped continuation lines (detected by mid-sentence line endings), and bibliography spillover detection (stops at double blank lines or `[^YEAR]:` patterns).
+`parse_index_md()` handles main entries, sub-entries, `(cont.)` continuations, abbreviated page ranges (`516–17` → 516–517), "See also" cross-refs (plain and italic `*See also ...*`), wrapped continuation lines (detected by mid-sentence line endings), and bibliography spillover detection (stops at double blank lines or `[^YEAR]:` patterns).
+
+`_split_term_and_refs()` strips markdown inline emphasis (`*N*` → `N`) before applying `_TRAILING_REFS_RE`, so italic illustration page refs (common in Claude API output) are extracted correctly. Returns clean (markdown-stripped) term for reliable chapter text matching.
 
 ### Idempotency
 
@@ -463,14 +518,17 @@ Saves original index as `.orig.md` on first run. Subsequent runs always read fro
 | v6 Modern Bio/Earth | 2,654 | 80% | Clean |
 | v7 Modern Social | 2,753 | 87% | Clean |
 | v8 National/Global | 2,082 | 80% | Clean |
-| Boston Artifacts | 1,666 | 85% | Pageless mode, 59 artifact-level chapters |
-| **Total** | **20,427** | | **7 of 8 clean** |
+| Boston Artifacts (Surya) | 1,666 | 85% | Pageless mode, 59 artifact-level chapters |
+| Boston Artifacts (Claude API) | 396 | — | Pageless mode, 35 chapters; 388 unique terms linked |
+| **Total** | **20,823** | | **7 of 8 clean** |
 
 ### Known issues
 
 1. **V4 semicolon-delimited format** — v4's index `.orig.md` was corrupted by a previous buggy run (linked output was saved back as the original). The parser is now correct for new extractions; v4 needs re-extraction from the PDF to regenerate a clean index.
 
-2. ~~**Years parsed as page numbers**~~ — fixed: `_filter_year_refs()` in `link_index` computes `max_page = max(ch.page_end for ch in chapters)` and moves refs exceeding that threshold back into the term text (e.g. "British Anatomy Act of 1832, 269" → term "British Anatomy Act of 1832", ref [269]).
+2. ~~**Years parsed as page numbers**~~ — fixed: `_filter_year_refs()` in `link_index` computes `max_page = max(ch.page_end for ch in chapters)` and moves refs exceeding that threshold back into the term text.
+
+3. ~~**Italic page refs unlinked (pageless mode)**~~ — fixed: `_split_term_and_refs()` strips `*N*` markdown before `_TRAILING_REFS_RE`; pageless renderer no longer exits early on entries with empty `page_refs`; `*See also*` italic wrapper now recognized by the "See also" extractor.
 
 3. **Unmatched generic sub-entries** — terms like "overview", "general discussion", "in optics" don't appear verbatim in chapter text (~15–20% of refs). Correctly left as plain text by the conservative matching approach.
 

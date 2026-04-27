@@ -76,15 +76,25 @@ _SEE_ALSO_RE = re.compile(r"See also\s*(.*)$", re.IGNORECASE)
 _SEE_RE = re.compile(r"^.*\.\s*See\s+(.+)$", re.IGNORECASE)
 _CONT_RE = re.compile(r"^(.+?)\s*\(cont\.\)\s*$")
 _TRAILING_REFS_RE = re.compile(r",?\s*((?:\d+[–\-]?\d*(?:,\s*)?)+)\s*$")
+_MD_INLINE_RE = re.compile(r"\*([^*]+)\*|_([^_]+)_")
+
+
+def _strip_md_inline(text: str) -> str:
+    """Strip markdown inline emphasis, keeping content: *18* -> 18."""
+    return _MD_INLINE_RE.sub(lambda m: m.group(1) or m.group(2), text)
 
 
 def _split_term_and_refs(line: str) -> tuple[str, str]:
-    """Split 'abacus, 516–17' into ('abacus', '516–17')."""
-    m = _TRAILING_REFS_RE.search(line)
+    """Split 'abacus, 516–17' into ('abacus', '516–17').
+
+    Works on markdown-stripped version so italic page refs like '*18*'
+    are treated as bare digits. Returns stripped term for clean matching.
+    """
+    clean = _strip_md_inline(line)
+    m = _TRAILING_REFS_RE.search(clean)
     if m:
-        term = line[: m.start()].rstrip(", ")
-        return term, m.group(1)
-    return line.rstrip(", "), ""
+        return clean[: m.start()].rstrip(", "), m.group(1)
+    return clean.rstrip(", "), ""
 
 
 def _filter_year_refs(entries: list[IndexEntry], max_page: int) -> list[IndexEntry]:
@@ -173,10 +183,10 @@ def parse_index_md(text: str) -> list[IndexEntry]:
         # Strip inline ". See also [targets]" from entry lines.
         # Targets may be on this line or the next; extracted into see_also.
         pending_see_also = False
-        see_also_trail = re.search(r"[.;]\s*See also\s*(.*?)\s*$", stripped, re.IGNORECASE)
+        see_also_trail = re.search(r"[.;]\s*\*?See also\*?\s*(.*?)\*?\s*$", stripped, re.IGNORECASE)
         if see_also_trail:
             stripped = stripped[: see_also_trail.start()].rstrip()
-            targets = see_also_trail.group(1).strip()
+            targets = _strip_md_inline(see_also_trail.group(1).strip())
             pending_see_also = True
             _pending_see_also_targets = targets if targets else ""
 
@@ -479,8 +489,9 @@ def _find_chapters_for_term(term: str, chapters: list[ChapterFile]) -> list[Chap
 
 def _render_entry_pageless(entry: IndexEntry, chapters: list[ChapterFile], index_dir: str) -> str:
     """Render an IndexEntry using term-only matching (no page ranges)."""
-    if not entry.page_refs and not entry.sub_entries and not entry.see_also:
-        return entry.raw_text or entry.term
+    # Skip truly empty entries (e.g. malformed lines with no content)
+    if not entry.term:
+        return entry.raw_text or ""
 
     parts = [entry.term]
     matched = _find_chapters_for_term(entry.term, chapters)
@@ -499,6 +510,9 @@ def _render_entry_pageless(entry: IndexEntry, chapters: list[ChapterFile], index
     elif entry.page_refs:
         ref_strs = [r.label() for r in entry.page_refs]
         parts.append(", " + ", ".join(ref_strs))
+    elif not entry.sub_entries and not entry.see_also:
+        # No match and no structured content — preserve original line
+        return entry.raw_text or entry.term
 
     lines = [_join_parts(parts)]
 

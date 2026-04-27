@@ -8,6 +8,7 @@ from doc2md.extract.ocr_engines.cascade import (
     build_default_cascade,
     default_quality_check,
 )
+from doc2md.extract.ocr_engines.claude_api import ClaudeApiEngine
 from doc2md.extract.ocr_engines.surya import SuryaEngine
 from doc2md.extract.ocr_engines.tesseract import TesseractEngine
 
@@ -19,6 +20,7 @@ __all__ = [
     "TesseractEngine",
     "AppleVisionEngine",
     "CascadeEngine",
+    "ClaudeApiEngine",
     "default_quality_check",
     "build_default_cascade",
 ]
