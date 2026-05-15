@@ -261,6 +261,13 @@ Cascade stages missing their Python dependency are silently skipped at runtime; 
 - **Remaining quality gap**: Morocco's 4 real body chapters have no regex-detectable markers; they live as a ~4000-line blob inside `010_preface/`. Fixable only with LLM page-number detection or manual `ChapterDef` list.
 - **Full history** (bugs, thermal issues, A/B tests, MPS setup, chapter splitter hardening): see [`morocco_processing_notes.md`](./morocco_processing_notes.md)
 
+#### Claude API run (Sonnet Batch + --rerun-empty)
+
+- **Run**: `run_claude_api_ocr.py synced/morocco_globalization_and_its_consequences --book morocco` → 3 sub-batches of 50, $0.36, ~2.2 min wall-clock
+- **Copyright refusals**: 68% of pages (70/103) refused or hard-blocked — 8 hard API errors, 62 soft refusals (summary text). Root cause: recently published academic monograph recognised by model. `--rerun-empty` fixed 10/18 hard-blocked pages via Haiku; soft refusals required manual grep-and-zero sweep with multiple pattern passes.
+- **Usable output**: 33/103 pages (32%) with real content — front matter, partial chapter text, Endnotes, Bibliography, Index
+- **Chapter splitting**: not completed due to refusal rate making output too sparse. Prompt fix applied (`do NOT output column label or separator`) and chapter splitter extended with `_CHAPTER_RE` for use when re-run with a less restrictive model.
+
 ## Known Limitations
 
 - **Unsectioned chapters** — 14 files (mostly indexes, contributor lists, and continuous essays) have no section headings detected because the source PDFs genuinely lack them
@@ -289,7 +296,8 @@ Evaluated as potential replacements for the OCR cascade (stages 2–6) on screen
 - **Thermal**: zero local compute; no thermal risk
 - **Cost**: ~$0.004/page Sonnet real-time; **Batch API 50% discount** → Boston $1.69 Sonnet + $0.09 Haiku re-runs = **$1.78 total for 418 pages**
 - **Accuracy**: frontier model; excellent heading-classified markdown in one pass; eliminates cascade + classifier stages. Minor issues: some narrative pages trigger copyright refusals (re-run with Haiku); Haiku hallucinates footnote definitions despite prompt instructions
-- **Prompt**: verbatim transcription, headings via `#`/`##`/`###`, body word-for-word with hyphenation joining, footnote markers inline, footnote definitions only when visible on page, figure captions as blockquotes, omit page numbers/running headers
+- **Copyright refusals**: two failure modes — (a) `type=errored` hard API block (400 "Output blocked by content filtering policy"); (b) soft refusal where model returns summary text instead of transcription. `--rerun-empty` re-runs 0-byte pages via Haiku real-time. `_SUMMARY_RE` quality gate catches both patterns. Morocco globalization had ~68% refusal rate (recent academic monograph); Boston had near-zero. Refusal rate is book-dependent.
+- **Prompt**: verbatim transcription, headings via `#`/`##`/`###`, body word-for-word with hyphenation joining, footnote markers inline, footnote definitions only when visible on page, figure captions as blockquotes, omit page numbers/running headers. Book-specific extras in `prompts.py` (`--book KEY`). Morocco extra: two-column left-first (no column labels), omit running headers, chapter title pages, endnote markers. Boston extra: PART/artifact headings, Notes footnote defs, italic index page refs.
 - **Implementation notes**: proxy workaround (use `HTTPS_PROXY` via `httpx.HTTPTransport`, not `ALL_PROXY` which requires `socksio`); chunked into ≤50 images per Batch API POST to avoid proxy size limits; `BATCH_THRESHOLD=10` (auto-batch >10 pages)
 - **Constraints**: requires internet + API key; not local-first; image downscaling (0.5×, 0.75×) triggers copyright refusals on narrative pages — full resolution required
 
@@ -464,8 +472,8 @@ Post-processing tool that splits a single-file markdown book into per-chapter di
 
 ### How it works
 
-1. **TOC detection** — finds "Contents" section, identifies duplicate markers (TOC vs body) to locate where body content begins
-2. **Section-level detection** — finds PART headers, named sections (Preface, Introduction, Notes, Bibliography, Index), titled sections (CONCLUSION, APPENDIX); handles wrapped multi-line titles and HTML tag stripping; all patterns accept optional `(?:#+\s*)?` prefix to handle markdown heading-prefixed lines from Claude API output
+1. **TOC detection** — finds "Contents" section; uses a 150-line window to distinguish TOC entries from body occurrences (prevents false `toc_end` when Endnotes subsections repeat section names like `## PREFACE`); identifies first out-of-window body occurrence to locate where body content begins
+2. **Section-level detection** — finds PART headers; named sections (Preface, Acknowledgments, Introduction, Endnotes, Notes, Conclusion, Bibliography, Index — case-sensitive to avoid ALL-CAPS subsection false matches); titled sections (CONCLUSION, APPENDIX, etc.); `Chapter One/Two/.../N: Title` via `_CHAPTER_RE` for books using that format; handles wrapped multi-line titles and HTML tag stripping; all patterns accept optional `(?:#+\s*)?` prefix to handle markdown heading-prefixed lines from Claude API output
 3. **Artifact-level detection** (`--artifacts`) — within PART sections, finds individual items via numbered headings (`N. Title`) or first figure references (`FIGURE N.1`); backs up to preceding blank line for figure-only splits; extracts titles from TOC and Appendix
 
 ### Directory naming
