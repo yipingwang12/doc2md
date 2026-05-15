@@ -315,6 +315,78 @@ Evaluated as potential replacements for the OCR cascade (stages 2–6) on screen
 
 Best fit by use case: cascade for bulk re-processing where speed matters; Claude API for new books where cascade has known regressions (Morocco body chapters, Boston title detection) and cost is acceptable; Qwen2.5-VL not recommended given speed regression vs cascade and accuracy regression vs Claude API.
 
+### Qwen2.5-VL on Cloud GPU (evaluated, not yet implemented)
+
+Evaluated as an alternative to Anthropic API for library-scale processing, motivated by copyright refusal rates on academic texts.
+
+- **Model**: Qwen2.5-VL-7B — smallest size with reliable structure-preserving OCR. 3B degrades on two-column layouts and footnote formatting. 32B requires multi-GPU.
+- **Hardware fit**: ~14 GB float16; fits on T4 (16 GB) with INT8 quantisation or A10G/L4 (24 GB) comfortably
+- **Speed**: ~0.12–0.2 pages/sec on single A10G; 80,000-page library at 10 parallel instances ≈ 15 hrs wall-clock
+- **Copyright refusals**: essentially zero — self-hosted models have no content filtering layer; eliminates the primary failure mode of the Anthropic API for academic texts
+- **Accuracy**: roughly equivalent to Haiku cascade results; weaker than Sonnet on heading hierarchy, footnote placement, and two-column ordering; potentially stronger than Claude on non-Latin scripts (Arabic transliteration) due to Qwen's multilingual document training
+- **Western alternatives**: no Western open-source model clearly matches Qwen2.5-VL-7B on document OCR at 7B scale as of mid-2025. Closest options: Pixtral-12B (Mistral, French) — best Western substitute, similar hardware requirements, ~10–15% accuracy gap on structured academic text; Llama 3.2 Vision 11B (Meta) — weaker on document structure; PaliGemma 2 10B (Google DeepMind) — competitive on some document benchmarks; Phi-4-multimodal (Microsoft) — promising but less proven on long-form book transcription
+- **Infrastructure**: vLLM or simple `transformers` inference loop; SQS or similar queue for page dispatch; per-page `.txt` checkpointing (already in pipeline) makes spot-instance interruption safe
+
+#### Cloud provider comparison
+
+| Provider | Instance | VRAM | On-demand | Spot/Preemptible | Notes |
+|---|---|---|---|---|---|
+| AWS | g5.xlarge | A10G 24 GB | ~$1.00/hr | ~$0.33/hr | Most availability |
+| GCP | g2-standard-4 | L4 24 GB | ~$0.70/hr | ~$0.22/hr | Auto sustained-use discount |
+| Azure | NVads A10 v5 | A10 24 GB | ~$0.90/hr | ~$0.15/hr | Patchier spot availability |
+| **RunPod Secure** | A10G | 24 GB | **~$0.49/hr** | — | Proper datacenter; recommended |
+| **Lambda Labs** | A10G | 24 GB | **~$0.60/hr** | — | Pre-installed PyTorch/CUDA |
+| Vast.ai | varies | varies | **~$0.25–0.35/hr** | — | Marketplace; highest failure risk |
+
+AWS/GCP/Azure are within ~10–20% of each other for equivalent hardware — not a meaningful differentiator. Specialist ML clouds (RunPod, Lambda Labs) offer 30–50% savings with adequate reliability for a one-off job. Vast.ai is cheapest but requires robust checkpointing due to node instability and has weak data privacy guarantees (third-party hardware).
+
+**Why specialist clouds are cheaper**: stripped overhead (no compliance certifications, no enterprise SLAs, no multi-service ecosystem), leaner operations focused on GPU time only, opportunistic hardware sourcing. RunPod has two tiers: Secure Cloud (real datacenters, recommended) and Community Cloud (distributed third-party nodes, cheaper but privacy concerns). Lambda Labs runs its own datacenters and is the most reliable of the three.
+
+#### Cost estimate for full library (80,000 pages)
+
+| Engine | Config | Cost | Wall time |
+|---|---|---|---|
+| Anthropic Sonnet Batch | — | ~$320 | ~few hrs (Anthropic-parallel) |
+| Anthropic cascade (Haiku→Sonnet) | — | ~$120 | ~few hrs |
+| Qwen2.5-VL-7B | 10× RunPod A10G spot | ~**$25–35** | ~15 hrs |
+| Qwen2.5-VL-7B | 1× RunPod A10G | ~**$25–35** | ~150 hrs |
+
+Note: Anthropic cost assumes low refusal rate (Boston-like). If refusal rate across library resembles Morocco (~68%), effective cost per usable page rises significantly.
+
+### NotebookLM (evaluated, not suitable for pipeline)
+
+- **Input**: does not accept raw image files (PNG/JPG); requires PDFs, Google Docs, URLs, or audio. Image-based PDFs trigger Google's OCR backend — quality decent for clean text, variable for complex layouts.
+- **Copyright**: no model-level refusals; uploads copyrighted content to Google's servers (ToS question, not technically enforced).
+- **Q&A and summarization**: strong for interactive research — "what does this book say about X?", thematic connections across chapters, study guides, FAQs. Not suitable for producing structured output (no JSON, no chapter-linked index entries, no systematic entity extraction).
+- **Scale**: ~50-source limit per notebook, no programmatic API — bulk processing 149 books not feasible.
+- **Verdict**: useful complement for deep-diving into individual books interactively; not a replacement for the doc2md pipeline.
+
+## Library Scale & Processing Strategy
+
+### Inventory (as of May 2026)
+
+- **Location**: `gdrive:listening/books` (rclone remote)
+- **Books**: 149 folders
+- **Screenshots**: ~47,000 image files total
+- **Effective pages**: ~80,000 (Libby spreads counted as 2 pages each; estimated 70% Libby / 30% browser screenshots)
+- **Formats**: mix of Libby landscape spreads (auto-detected by `is_libby_spread()`) and browser screenshots (chrome-cropped via `detect_content_bounds()`)
+
+### Per-book cost benchmarks
+
+| Book | Pages | Engine | Cost | Notes |
+|---|---|---|---|---|
+| Boston (Libby spreads) | 418 | Sonnet Batch | $1.78 | ~$0.004/page; near-zero refusals |
+| Morocco globalization (browser) | 103 | Sonnet Batch | $0.36 | ~$0.004/page; 68% refusal rate |
+
+### Copyright refusal risk by book type
+
+Refusal rate depends on how recognisable and recently published the book is to the model. Boston (local history, archaeology) had near-zero refusals; Morocco globalization (2007 academic monograph, politically sensitive topics) had 68%. Likely risk factors: recent publication date, well-known academic press, narrative-dense prose chapters. Endnotes, bibliographies, and indexes consistently transcribed without refusal across both books.
+
+**Mitigation options**:
+1. `--rerun-empty` with Haiku — catches hard-blocked pages; Haiku slightly less restrictive than Sonnet
+2. Haiku→Sonnet cascade (`--cascade`) — quality gate via `_SUMMARY_RE` catches soft refusals before writing
+3. Open-source model on cloud GPU — eliminates refusals entirely at ~$25–35 for full library
+
 ## Future Work: OCR Cascade
 
 The cascade is functional end-to-end and already delivers a ~2.5× speedup on Boston, but several quality and performance improvements are identified and not yet implemented. Each is a self-contained follow-up.
