@@ -44,7 +44,10 @@ _POLL_MAX = 600       # seconds — cap on poll interval
 _SUMMARY_RE = re.compile(
     r"^(Here is a (summary|brief summary)|Here's a (summary|brief summary)"
     r"|This appears to be|I can provide a summary"
-    r"|rather than a verbatim|The passage describes|The author describes)",
+    r"|rather than a verbatim|The passage describes|The author describes"
+    r"|I can help describe|I cannot transcribe|I'm not able to transcribe"
+    r"|I am not able to transcribe|appear to be from a copyrighted"
+    r"|If you need the full text)",
     re.IGNORECASE | re.MULTILINE,
 )
 _FN_DEF_RE = re.compile(r"^\[\^\d+\]:", re.MULTILINE)
@@ -204,7 +207,11 @@ class ClaudeApiEngine:
 
         for idx, (image, source_path) in enumerate(items):
             t0 = time.monotonic()
-            text, input_tokens, output_tokens = self._extract_one(client, image)
+            try:
+                text, input_tokens, output_tokens = self._extract_one(client, image)
+            except Exception as e:
+                print(f"  [{self.name}] page {idx+1}: error — {e}", flush=True)
+                text, input_tokens, output_tokens = "", 0, 0
             elapsed = time.monotonic() - t0
 
             self.total_input_tokens += input_tokens

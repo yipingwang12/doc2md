@@ -6,6 +6,8 @@ Auto-detects folder type:
   - Plain screenshots                        → no crop, no split
 
 Runs Sonnet Batch API by default. Use --cascade for Haiku-first escalation.
+Use --rerun-empty to re-run 0-byte pages via Haiku real-time (for Batch API
+errors / copyright refusals that produced empty output).
 
 Output: results/<folder_name>/<NNN>.txt + summary.json
 """
@@ -44,6 +46,8 @@ _PRICING = {
 }
 _DEFAULT_PRICING = (1.50, 7.50)
 
+_HAIKU = "claude-haiku-4-5-20251001"
+
 
 def _cost(input_tokens: int, output_tokens: int, model: str) -> float:
     in_m, out_m = _PRICING.get(model, _DEFAULT_PRICING)
@@ -68,7 +72,6 @@ def build_items(
     bounds = detect_content_bounds(image_files)
 
     if is_libby_spread(folder):
-        # Landscape two-page spreads: split at midpoint, no chrome crop
         items = []
         for path in image_files:
             img = Image.open(path)
@@ -92,6 +95,59 @@ def build_items(
     return items, mode
 
 
+def rerun_empty(folder: Path, out_dir: Path, prompt: str) -> None:
+    """Re-run 0-byte output pages via Haiku real-time.
+
+    Finds all NNN.txt files in out_dir that are empty, maps them back to
+    source images (applying the same split/crop as the original run), and
+    re-runs through Haiku real-time. Overwrites files that now have content;
+    leaves still-empty files in place with a warning.
+    """
+    all_items, _ = build_items(folder)
+
+    empty_paths = sorted(p for p in out_dir.glob("????.txt") if p.stat().st_size == 0)
+    if not empty_paths:
+        print(f"[{_ts()}] No empty pages found — nothing to re-run.", flush=True)
+        return
+
+    # Map filename NNN.txt → 0-based index in all_items
+    empty_indices = []
+    for p in empty_paths:
+        page_num = int(p.stem)        # 1-based
+        idx = page_num - 1            # 0-based
+        if 0 <= idx < len(all_items):
+            empty_indices.append((idx, page_num))
+        else:
+            print(f"[{_ts()}] Warning: {p.name} has no matching source image", flush=True)
+
+    print(
+        f"[{_ts()}] Re-running {len(empty_indices)} empty pages via Haiku real-time …",
+        flush=True,
+    )
+
+    engine = ClaudeApiEngine(model=_HAIKU, use_batch=False, prompt=prompt)
+    rerun_items = [all_items[idx] for idx, _ in empty_indices]
+    results = engine.ocr_batch(rerun_items, auto_number=False)
+
+    fixed = still_empty = 0
+    for (_, page_num), result in zip(empty_indices, results):
+        text = result.page.raw_text or ""
+        out_path = out_dir / f"{page_num:04d}.txt"
+        if text.strip():
+            out_path.write_text(text)
+            fixed += 1
+        else:
+            print(f"  page {page_num}: still empty after Haiku — leaving blank", flush=True)
+            still_empty += 1
+
+    cost = _cost(engine.total_input_tokens, engine.total_output_tokens, _HAIKU)
+    print(
+        f"[{_ts()}] Re-run done: {fixed} fixed, {still_empty} still empty  "
+        f"${cost:.4f}  ({engine.total_input_tokens}in/{engine.total_output_tokens}out tokens)",
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", type=Path, help="Screenshot folder to process")
@@ -102,6 +158,10 @@ def main() -> None:
     parser.add_argument(
         "--cascade", action="store_true",
         help="Haiku first, Sonnet only for quality failures (cheaper)",
+    )
+    parser.add_argument(
+        "--rerun-empty", action="store_true",
+        help="Re-run 0-byte pages via Haiku real-time instead of full OCR",
     )
     parser.add_argument(
         "--book", default=None, metavar="KEY",
@@ -116,8 +176,16 @@ def main() -> None:
     out_dir = args.output_dir or (_repo / "results" / folder.name)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    prompt = build_prompt(args.book)
+    prompt_label = f"{args.book} (tailored)" if args.book else "base"
+
     print(f"[{_ts()}] Input:  {folder}", flush=True)
     print(f"[{_ts()}] Output: {out_dir}", flush=True)
+    print(f"[{_ts()}] Prompt: {prompt_label}", flush=True)
+
+    if args.rerun_empty:
+        rerun_empty(folder, out_dir, prompt)
+        return
 
     items, mode = build_items(folder)
     sample_w, sample_h = items[0][0].size
@@ -125,12 +193,6 @@ def main() -> None:
         f"[{_ts()}] Mode: {mode}  ({sample_w}×{sample_h} px per item)",
         flush=True,
     )
-
-    prompt = build_prompt(args.book)
-    if args.book:
-        print(f"[{_ts()}] Prompt: {args.book} (tailored)", flush=True)
-    else:
-        print(f"[{_ts()}] Prompt: base", flush=True)
 
     engine = ClaudeApiEngine(use_batch=True, prompt=prompt)  # Sonnet, Batch API
     t0 = time.monotonic()
@@ -140,18 +202,16 @@ def main() -> None:
         results, token_counts = engine.ocr_batch_cascade(items, auto_number=True)
         elapsed = time.monotonic() - t0
 
-        haiku_model = "claude-haiku-4-5-20251001"
-        sonnet_model = "claude-sonnet-4-6"
-        haiku_cost = _cost(token_counts["primary_input"], token_counts["primary_output"], haiku_model)
-        sonnet_cost = _cost(token_counts["escalation_input"], token_counts["escalation_output"], sonnet_model)
+        haiku_cost = _cost(token_counts["primary_input"], token_counts["primary_output"], _HAIKU)
+        sonnet_cost = _cost(token_counts["escalation_input"], token_counts["escalation_output"], "claude-sonnet-4-6")
         total_cost = haiku_cost + sonnet_cost
         cost_detail = {
-            "haiku_input_tokens":  token_counts["primary_input"],
-            "haiku_output_tokens": token_counts["primary_output"],
-            "haiku_cost_usd":      round(haiku_cost, 4),
-            "sonnet_input_tokens": token_counts["escalation_input"],
-            "sonnet_output_tokens":token_counts["escalation_output"],
-            "sonnet_cost_usd":     round(sonnet_cost, 4),
+            "haiku_input_tokens":   token_counts["primary_input"],
+            "haiku_output_tokens":  token_counts["primary_output"],
+            "haiku_cost_usd":       round(haiku_cost, 4),
+            "sonnet_input_tokens":  token_counts["escalation_input"],
+            "sonnet_output_tokens": token_counts["escalation_output"],
+            "sonnet_cost_usd":      round(sonnet_cost, 4),
         }
         print(
             f"[{_ts()}] Haiku:  {token_counts['primary_input']}in/"

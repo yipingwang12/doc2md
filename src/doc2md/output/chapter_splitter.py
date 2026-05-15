@@ -33,9 +33,15 @@ class ChapterDef:
 
 # PART N Title (may wrap to next line)
 _PART_RE = re.compile(r"^(?:#+\s*)?PART\s+(\d+)\s+(.+)$", re.IGNORECASE)
-# Named front/back matter sections (bold or plain, with optional markdown heading)
+# Named front/back matter sections (bold or plain, with optional markdown heading).
+# Case-sensitive to avoid false matches from ALL-CAPS subsection headings.
 _NAMED_SECTION_RE = re.compile(
-    r"^(?:#+\s*)?(?:<b>)?(Preface|Acknowledgments|Introduction|Notes|Bibliography|Index)(?:</b>)?$",
+    r"^(?:#+\s*)?(?:<b>)?(Preface|Acknowledgments?|Introduction|Endnotes?|Notes|Conclusion|Bibliography|Index)(?:</b>)?$",
+)
+# Chapter N: Title or Chapter One: Title
+_CHAPTER_RE = re.compile(
+    r"^(?:#+\s*)?Chapter\s+(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|\d+)[:\s]+(.+)$",
+    re.IGNORECASE,
 )
 # CONCLUSION. Title or APPENDIX. Title (may wrap)
 _TITLED_SECTION_RE = re.compile(
@@ -81,8 +87,12 @@ def _find_toc_end(lines: list[str]) -> int:
     if contents_line is None:
         return 0
 
-    # Collect all positions of structural markers (named sections, PARTs)
-    # and find duplicates: the first is in the TOC, the second is body.
+    # Collect positions of structural markers after the Contents heading.
+    # Markers within _TOC_WINDOW lines of Contents are counted as TOC entries;
+    # the first marker *outside* that window is the body occurrence.
+    _TOC_WINDOW = 150
+    toc_region_end = contents_line + _TOC_WINDOW
+
     marker_positions: dict[str, list[int]] = {}
     for i in range(contents_line + 1, len(lines)):
         stripped = lines[i].strip()
@@ -96,10 +106,19 @@ def _find_toc_end(lines: list[str]) -> int:
             key = f"part_{m.group(1)}"
             marker_positions.setdefault(key, []).append(i)
 
-    # The TOC end is the earliest "second occurrence" of any marker
+    # The TOC end is the earliest body occurrence of any marker.
+    # A marker is a "body occurrence" if it appears outside the TOC window
+    # (the first in-window occurrence is the TOC entry; first out-of-window is body).
     body_starts: list[int] = []
     for positions in marker_positions.values():
-        if len(positions) >= 2:
+        # Partition into TOC (within window) and body (outside window)
+        in_toc = [p for p in positions if p <= toc_region_end]
+        out_toc = [p for p in positions if p > toc_region_end]
+        if in_toc and out_toc:
+            # Classic pattern: TOC entry + body section
+            body_starts.append(out_toc[0])
+        elif len(positions) >= 2 and not in_toc:
+            # All occurrences outside window: use second as body start
             body_starts.append(positions[1])
 
     if body_starts:
@@ -249,6 +268,17 @@ def detect_chapters(
             chapters.append(
                 ChapterDef(title=f"Part {part_num}: {title_text}", start_line=i)
             )
+            i += 1
+            continue
+
+        # Chapter One: Title or Chapter 1: Title
+        m = _CHAPTER_RE.match(stripped)
+        if m:
+            key = f"chapter_{m.group(1).lower()}"
+            if key not in seen_named:
+                seen_named.add(key)
+                full_title = f"Chapter {m.group(1).title()}: {_strip_tags(m.group(2).strip())}"
+                chapters.append(ChapterDef(title=full_title, start_line=i))
             i += 1
             continue
 

@@ -33,8 +33,8 @@ Book-specific notes (A History of Boston in 50 Artifacts):
 
     "morocco": """\
 Book-specific notes (Morocco: Globalization and Its Consequences):
-- Pages use a two-column layout: transcribe the LEFT column in full first, then the RIGHT column
-- The very top line of the page is a running header (book title or chapter name): omit it
+- Pages use a two-column layout: transcribe the left column text in full first, then continue with the right column — do NOT output any column label or separator
+- The very top line of the page is a running header (book title or chapter name): omit it entirely
 - Chapter-title pages show a centered chapter number ("One", "Two", "Three" …) and subtitle — use `# Chapter [Number]: Subtitle`
 - Section subheadings appear in bold or ALL CAPS within chapters — use `##`
 - Endnote markers in the body are small superscript numbers — transcribe as `[^N]`
