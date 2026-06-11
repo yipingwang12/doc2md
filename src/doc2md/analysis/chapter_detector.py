@@ -74,12 +74,13 @@ def _build_chapters(blocks: list[TextBlock], chapter_starts: list[int]) -> list[
     merged_starts = _merge_adjacent_starts(blocks, chapter_starts)
 
     chapters = []
-    for ci, (start_idx, title) in enumerate(merged_starts):
+    for ci, (start_idx, title, consumed) in enumerate(merged_starts):
         next_start = merged_starts[ci + 1][0] if ci + 1 < len(merged_starts) else len(blocks)
-        # Collect blocks between this start and the next, excluding heading blocks used in the title
+        # Exclude exactly the boundary headings merged into the title — text
+        # matching would also delete identically-titled headings in the body
         chapter_blocks = [
-            b for b in blocks[start_idx:next_start]
-            if not (b.block_type == "heading" and b.text in title)
+            b for i, b in enumerate(blocks[start_idx:next_start], start=start_idx)
+            if i not in consumed
         ]
         chapters.append(Chapter(
             title=title,
@@ -98,28 +99,31 @@ def _build_chapters(blocks: list[TextBlock], chapter_starts: list[int]) -> list[
     return chapters
 
 
-def _merge_adjacent_starts(blocks: list[TextBlock], chapter_starts: list[int]) -> list[tuple[int, str]]:
+def _merge_adjacent_starts(
+    blocks: list[TextBlock], chapter_starts: list[int]
+) -> list[tuple[int, str, set[int]]]:
     """Merge consecutive chapter starts that have no body content between them.
 
-    Returns list of (start_index, merged_title) tuples.
+    Returns list of (start_index, merged_title, consumed_indices) tuples;
+    consumed_indices are the heading blocks whose text forms the title.
     """
     if not chapter_starts:
         return []
 
-    merged: list[tuple[int, str]] = []
+    merged: list[tuple[int, str, set[int]]] = []
 
     for start_idx in chapter_starts:
         title = blocks[start_idx].text
 
         if merged:
-            prev_idx, prev_title = merged[-1]
+            prev_idx, prev_title, prev_consumed = merged[-1]
             # Check if all blocks between prev start and this one are headings
             between = blocks[prev_idx + 1:start_idx]
             if all(b.block_type == "heading" for b in between):
-                merged[-1] = (prev_idx, prev_title + " — " + title)
+                merged[-1] = (prev_idx, prev_title + " — " + title, prev_consumed | {start_idx})
                 continue
 
-        merged.append((start_idx, title))
+        merged.append((start_idx, title, {start_idx}))
 
     return merged
 

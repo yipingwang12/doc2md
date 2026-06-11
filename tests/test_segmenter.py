@@ -563,3 +563,21 @@ class TestAllCapsBranchMathFilter:
         """'INTRODUCTION' is a genuine ALL_CAPS heading and must not be filtered."""
         result = segment_page_blocks([self._body_block("INTRODUCTION")], 0, self._profile)
         assert any(b.block_type == "heading" for b in result)
+
+
+class TestRepeatedLineFiltering:
+    def test_repeated_line_removed_whole_line_only(self):
+        profile = FontProfile(body_size=10.0, repeated_lines={"Author Name"})
+        block = {
+            "type": 0,
+            "bbox": (0, 100, 500, 160),
+            "lines": [
+                {"spans": [{"text": t, "size": 10.0, "font": "TestFont", "flags": 0}]}
+                for t in ("The Author Name wrote this.", "Author Name", "More body text.")
+            ],
+        }
+        result = segment_page_blocks([block], page_index=0, profile=profile)
+        text = "\n".join(b.text for b in result)
+        assert "The Author Name wrote this." in text  # in-sentence phrase preserved
+        assert "More body text." in text
+        assert "\nAuthor Name" not in text  # standalone repeated line removed

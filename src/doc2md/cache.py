@@ -28,10 +28,14 @@ class Cache:
     def file_hash(path: Path) -> str:
         h = hashlib.sha256()
         if path.is_dir():
+            # Hash member content, not just size — same-size edits
+            # (re-exports, in-place pixel edits) must invalidate the cache
             for f in sorted(path.rglob("*")):
                 if f.is_file():
                     h.update(str(f.relative_to(path)).encode())
-                    h.update(str(f.stat().st_size).encode())
+                    with open(f, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(8192), b""):
+                            h.update(chunk)
             return h.hexdigest()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):

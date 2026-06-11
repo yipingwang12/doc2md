@@ -72,3 +72,18 @@ class TestCache:
         manifest = json.loads(cache.manifest_path.read_text())
         key = str(test_file.resolve())
         assert manifest["files"][key]["output_path"] == "results/ch01.md"
+
+
+class TestDirectoryHash:
+    def test_dir_same_size_content_change_invalidates(self, tmp_cache, tmp_path):
+        folder = tmp_path / "shots"
+        folder.mkdir()
+        img = folder / "page_01.png"
+        img.write_bytes(b"AAAA")
+        cache = Cache(tmp_cache)
+        cache.mark_stage(folder, "extract")
+        cache.mark_stage(folder, "assemble")
+        assert cache.is_complete(folder)
+
+        img.write_bytes(b"BBBB")  # same size, different bytes
+        assert not cache.is_complete(folder)

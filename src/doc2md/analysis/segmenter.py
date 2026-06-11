@@ -297,11 +297,14 @@ def _classify_block(
     if _is_boilerplate(text):
         return []
 
-    # Filter lines repeated across many pages (running headers/footers, author names)
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped in profile.repeated_lines:
-            text = text.replace(line, "").strip()
+    # Filter lines repeated across many pages (running headers/footers, author
+    # names). Whole lines only — substring removal would also delete legitimate
+    # occurrences of the phrase inside body prose.
+    if profile.repeated_lines:
+        text = "\n".join(
+            line for line in text.splitlines()
+            if line.strip() not in profile.repeated_lines
+        ).strip()
     if not text or _is_boilerplate(text):
         return []
 

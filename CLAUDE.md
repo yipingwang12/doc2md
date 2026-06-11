@@ -31,7 +31,7 @@ src/doc2md/
 
 - LLM used **only as fallback** — rules cover the common case
 - Libby spreads: landscape + uniform dimensions → auto-split at midpoint
-- OCR cascade: PyMuPDF → Apple Vision → Surya (from PRD)
+- OCR cascade for screenshots: Tesseract → Apple Vision → Surya (PyMuPDF extracts digital PDFs, no OCR)
 
 ## Dev commands
 

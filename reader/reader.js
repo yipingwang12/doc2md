@@ -27,6 +27,7 @@ const state = {
   wordsBeforeChapter: 0,
   mode: 'page',         // 'page' or 'scroll'
   scrollFraction: 0,    // 0..1, scroll position for scroll mode
+  positions: {},        // positions[bookId][chapterId] = {page, scrollFraction}
   playbackSpeed: 1,     // 0.5..4
   fadeEnabled: true,    // word fade transition on/off
 };
@@ -45,6 +46,14 @@ function initMarkdown() {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // --- Persistence ---
 
 function loadPrefs() {
@@ -54,23 +63,35 @@ function loadPrefs() {
     state.theme = saved.theme ?? 'light';
     state.currentBook = saved.currentBook ?? null;
     state.currentChapter = saved.currentChapter ?? null;
-    state.currentPage = saved.currentPage ?? 0;
+    state.positions = (saved.positions && typeof saved.positions === 'object') ? saved.positions : {};
     state.mode = saved.mode ?? 'page';
-    state.scrollFraction = saved.scrollFraction ?? 0;
     state.playbackSpeed = saved.playbackSpeed ?? 1;
     state.fadeEnabled = saved.fadeEnabled ?? true;
   } catch { /* ignore */ }
 }
 
+function getSavedPosition(bookId, chapterId) {
+  return state.positions[bookId]?.[chapterId] ?? { page: 0, scrollFraction: 0 };
+}
+
+function saveCurrentPosition() {
+  if (!state.currentBook || !state.currentChapter) return;
+  const forBook = state.positions[state.currentBook] ?? (state.positions[state.currentBook] = {});
+  forBook[state.currentChapter] = {
+    page: state.currentPage,
+    scrollFraction: state.scrollFraction,
+  };
+}
+
 function savePrefs() {
+  saveCurrentPosition();
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     fontSize: state.fontSize,
     theme: state.theme,
     currentBook: state.currentBook,
     currentChapter: state.currentChapter,
-    currentPage: state.currentPage,
+    positions: state.positions,
     mode: state.mode,
-    scrollFraction: state.scrollFraction,
     playbackSpeed: state.playbackSpeed,
     fadeEnabled: state.fadeEnabled,
   }));
@@ -138,7 +159,12 @@ function renderLibrary() {
 
     const header = document.createElement('div');
     header.className = 'book-card-header';
-    header.innerHTML = `<span>${book.title}</span><span class="chapter-count">${book.chapters.length} chapters</span>`;
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = book.title;
+    const countSpan = document.createElement('span');
+    countSpan.className = 'chapter-count';
+    countSpan.textContent = `${book.chapters.length} chapters`;
+    header.append(titleSpan, countSpan);
 
     const list = document.createElement('ul');
     list.className = 'chapter-list collapsed';
@@ -164,6 +190,7 @@ function renderLibrary() {
 // --- Navigation ---
 
 function showLibrary() {
+  saveCurrentPosition();
   state.currentBook = null;
   state.currentChapter = null;
   state.currentPage = 0;
@@ -197,6 +224,9 @@ async function openChapter(bookId, chapterId) {
 
   state.currentBook = bookId;
   state.currentChapter = chapterId;
+  const pos = getSavedPosition(bookId, chapterId);
+  state.currentPage = pos.page;
+  state.scrollFraction = pos.scrollFraction;
 
   showReader();
   renderSidebar();
@@ -247,7 +277,7 @@ async function openChapter(bookId, chapterId) {
       savePrefs();
     });
   } catch (err) {
-    $('#reader-content').innerHTML = `<div class="loading">Error loading chapter: ${err.message}</div>`;
+    $('#reader-content').innerHTML = `<div class="loading">Error loading chapter: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -264,11 +294,7 @@ function renderSidebar() {
     const item = document.createElement('div');
     item.className = 'toc-item' + (ch.id === state.currentChapter ? ' active' : '');
     item.textContent = ch.title;
-    item.addEventListener('click', () => {
-      state.currentPage = 0;
-      state.scrollFraction = 0;
-      openChapter(state.currentBook, ch.id);
-    });
+    item.addEventListener('click', () => openChapter(state.currentBook, ch.id));
     toc.appendChild(item);
   }
 }
@@ -324,15 +350,15 @@ function buildPaperMetaHtml(meta) {
   const year = meta.year;
   if (!title && !authors && !journal && !year) return '';
   if (title && title !== 'Unknown') {
-    parts.push(`<div class="paper-meta-title">${title}</div>`);
+    parts.push(`<div class="paper-meta-title">${escapeHtml(title)}</div>`);
   }
   if (authors) {
     const authorStr = Array.isArray(authors) ? authors.join('; ') : authors;
-    if (authorStr) parts.push(`<div class="paper-meta-authors">${authorStr}</div>`);
+    if (authorStr) parts.push(`<div class="paper-meta-authors">${escapeHtml(authorStr)}</div>`);
   }
   if (journal || year) {
     const jy = [journal, year].filter(Boolean).join(' \u00B7 ');
-    parts.push(`<div class="paper-meta-journal">${jy}</div>`);
+    parts.push(`<div class="paper-meta-journal">${escapeHtml(jy)}</div>`);
   }
   return parts.length ? `<div class="paper-meta">${parts.join('')}</div>` : '';
 }
@@ -986,21 +1012,24 @@ function setupCitationPopovers(container) {
   let node;
   while ((node = walker.nextNode())) textNodes.push(node);
 
-  const citeRe = /(\d+)((?:,\s*\d+)*)/g;
+  // Citation context only: numbers in brackets/parens like [3], [1, 2], (3),
+  // or bare digit runs inside <sup> elements. Bare numbers in prose don't match.
+  const bracketCiteRe = /[[(](\d+(?:,\s*\d+)*)[\])]/g;
+  const supCiteRe = /(\d+(?:,\s*\d+)*)/g;
 
   for (const textNode of textNodes) {
     const val = textNode.nodeValue;
+    const citeRe = textNode.parentElement?.closest('sup') ? supCiteRe : bracketCiteRe;
     citeRe.lastIndex = 0;
     let match;
     const spans = [];
     let lastIdx = 0;
 
     while ((match = citeRe.exec(val)) !== null) {
-      const full = match[0];
-      const nums = full.split(',').map(s => parseInt(s.trim(), 10));
+      const nums = match[1].split(',').map(s => parseInt(s.trim(), 10));
       if (!nums.every(n => refMap[n])) continue;
 
-      spans.push({ start: match.index, end: match.index + full.length, nums });
+      spans.push({ start: match.index, end: match.index + match[0].length, nums });
     }
 
     if (!spans.length) continue;
@@ -1016,7 +1045,7 @@ function setupCitationPopovers(container) {
       span.textContent = val.slice(sp.start, sp.end);
       span.addEventListener('mouseover', (e) => {
         const refs = e.currentTarget.dataset.refs.split(',').map(Number);
-        const html = refs.map(n => `<p>${refMap[n]}</p>`).join('');
+        const html = refs.map(n => `<p>${escapeHtml(refMap[n])}</p>`).join('');
         showFootnotePopover(html, e.clientX, e.clientY);
       });
       span.addEventListener('mouseout', dismissPopover);

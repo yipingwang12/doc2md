@@ -55,30 +55,22 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
     is_browser = path.is_dir() and not is_libby and is_browser_screenshot(path)
     is_ordered = is_libby or is_browser
 
-    # Stage 1: Extract
+    # Stage 1: Extract — always re-runs (intermediate pages aren't persisted)
+    # and always with config params; the resume branch previously dropped them
     completed = cache.get_completed_stages(path)
-    if "extract" not in completed or force:
-        if path.is_dir():
-            if is_libby:
-                pages = extract_screenshot_spread(path)
-            else:
-                pages = extract_screenshots(path, auto_number=is_ordered)
+    if path.is_dir():
+        if is_libby:
+            pages = extract_screenshot_spread(path)
         else:
-            pages = extract_auto(
-                path,
-                min_chars=config.extraction.pymupdf_min_chars,
-                gibberish_threshold=config.extraction.gibberish_threshold,
-            )
-        cache.mark_stage(path, "extract")
+            pages = extract_screenshots(path, auto_number=is_ordered)
     else:
-        # Re-extract since we don't persist intermediate pages yet
-        if path.is_dir():
-            if is_libby:
-                pages = extract_screenshot_spread(path)
-            else:
-                pages = extract_screenshots(path, auto_number=is_ordered)
-        else:
-            pages = extract_auto(path)
+        pages = extract_auto(
+            path,
+            min_chars=config.extraction.pymupdf_min_chars,
+            gibberish_threshold=config.extraction.gibberish_threshold,
+        )
+    if "extract" not in completed or force:
+        cache.mark_stage(path, "extract")
 
     if not pages:
         logger.warning("No pages extracted from %s", path)
@@ -130,7 +122,13 @@ def process_file(path: Path, config: Config, force: bool = False) -> list[Path]:
 
 def process_all(config: Config, force: bool = False) -> list[Path]:
     """Discover and process all files."""
-    result = scan_directories(config.paths.local_pdf_dirs)
+    # Include the rclone sync target (cli.py sync) — otherwise Drive-synced
+    # books are downloaded but never discovered
+    scan_dirs = list(config.paths.local_pdf_dirs)
+    synced_dir = Path(config.paths.output_dir).parent / "synced"
+    if synced_dir.is_dir():
+        scan_dirs.append(str(synced_dir))
+    result = scan_directories(scan_dirs)
     all_outputs = []
 
     for pdf in result.pdfs:

@@ -93,3 +93,30 @@ class TestDetectChapters:
         chapters = detect_chapters(blocks, mock_client)
         assert len(chapters[0].blocks) == 2  # para 1, para 2
         assert len(chapters[1].blocks) == 1  # para 3
+
+
+class TestBuildChapters:
+    def test_body_heading_matching_title_is_preserved(self):
+        from doc2md.analysis.chapter_detector import _build_chapters
+
+        blocks = [
+            _block("China", "heading", 1),
+            _block("intro body"),
+            _block("China", "heading", 2),  # real sub-section, same text as title
+            _block("more body"),
+        ]
+        chapters = _build_chapters(blocks, [0])
+        assert [b.text for b in chapters[0].blocks] == ["intro body", "China", "more body"]
+
+    def test_merged_title_consumes_only_boundary_headings(self):
+        from doc2md.analysis.chapter_detector import _build_chapters
+
+        blocks = [
+            _block("Part V", "heading", 1),
+            _block("CHINA", "heading", 1),
+            _block("body"),
+            _block("Part V", "heading", 2),  # substring of merged title, must survive
+        ]
+        chapters = _build_chapters(blocks, [0, 1])
+        assert chapters[0].title == "Part V — CHINA"
+        assert [b.text for b in chapters[0].blocks] == ["body", "Part V"]
