@@ -17,6 +17,8 @@ const state = {
   library: null,
   currentBook: null,
   currentChapter: null,
+  resumeBook: null,
+  resumeChapter: null,
   currentPage: 0,
   totalPages: 1,
   fontSize: FONT_DEFAULT,
@@ -61,8 +63,11 @@ function loadPrefs() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     state.fontSize = saved.fontSize ?? FONT_DEFAULT;
     state.theme = saved.theme ?? 'light';
-    state.currentBook = saved.currentBook ?? null;
-    state.currentChapter = saved.currentChapter ?? null;
+    // Stash the resume target instead of setting current* — init() fires
+    // savePrefs() (theme/font) before openChapter() reads the saved position,
+    // and a non-null currentBook would clobber that chapter's slot with page 0
+    state.resumeBook = saved.currentBook ?? null;
+    state.resumeChapter = saved.currentChapter ?? null;
     state.positions = (saved.positions && typeof saved.positions === 'object') ? saved.positions : {};
     state.mode = saved.mode ?? 'page';
     state.playbackSpeed = saved.playbackSpeed ?? 1;
@@ -1286,10 +1291,10 @@ async function init() {
   }
 
   // Restore reading position if available
-  if (state.currentBook && state.currentChapter) {
-    const chapter = findChapter(state.currentBook, state.currentChapter);
+  if (state.resumeBook && state.resumeChapter) {
+    const chapter = findChapter(state.resumeBook, state.resumeChapter);
     if (chapter) {
-      openChapter(state.currentBook, state.currentChapter);
+      openChapter(state.resumeBook, state.resumeChapter);
       return;
     }
   }
