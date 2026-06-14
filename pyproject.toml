@@ -13,13 +13,15 @@ dependencies = [
     "transformers>=4.50,<5",
     "requests>=2.31",
     "pywebview>=5.0",
-    "playwright>=1.58.0",
+    "playwright==1.60.0",
+    "anthropic>=0.97.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
+    "pytest-playwright==0.8.0",
     "responses>=0.25",
 ]
 # Optional OCR engines for the cascade pipeline. Install one or both to
