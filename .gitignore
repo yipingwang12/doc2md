@@ -16,3 +16,14 @@ library.json
 dist/
 build/
 _desktop_build/build/
+
+# Local env + session worktrees
+.env
+.DS_Store
+.worktrees/
+
+# Large inputs / debug artifacts (not source)
+*.pdf
+screenshots/
+results_archive/
+*.iconset/

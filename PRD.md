@@ -66,6 +66,8 @@ Commands:
 
 `ANTHROPIC_API_KEY` — stored in `.env` at the repo root (git-ignored). Required for Claude API vision extraction (see [OCR Engines](docs/OCR_ENGINES.md)).
 
+> **Note:** This key leaks into any shell session that opens this workspace (e.g. via VS Code's Python extension loading `.env`). Because Claude Code's auth precedence ranks `ANTHROPIC_API_KEY` above the claude.ai OAuth token, this causes an auth conflict. To prevent this, `~/.zshrc` defines `alias claude='env -u ANTHROPIC_API_KEY claude'`, stripping the key before each Claude Code invocation.
+
 ## Configuration (`config.toml`)
 
 | Section | Key | Default | Purpose |
