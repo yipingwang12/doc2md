@@ -17,6 +17,8 @@ const state = {
   library: null,
   currentBook: null,
   currentChapter: null,
+  resumeBook: null,
+  resumeChapter: null,
   currentPage: 0,
   totalPages: 1,
   fontSize: FONT_DEFAULT,
@@ -27,6 +29,7 @@ const state = {
   wordsBeforeChapter: 0,
   mode: 'page',         // 'page' or 'scroll'
   scrollFraction: 0,    // 0..1, scroll position for scroll mode
+  positions: {},        // positions[bookId][chapterId] = {page, scrollFraction}
   playbackSpeed: 1,     // 0.5..4
   fadeEnabled: true,    // word fade transition on/off
 };
@@ -45,6 +48,14 @@ function initMarkdown() {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // --- Persistence ---
 
 function loadPrefs() {
@@ -52,25 +63,40 @@ function loadPrefs() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     state.fontSize = saved.fontSize ?? FONT_DEFAULT;
     state.theme = saved.theme ?? 'light';
-    state.currentBook = saved.currentBook ?? null;
-    state.currentChapter = saved.currentChapter ?? null;
-    state.currentPage = saved.currentPage ?? 0;
+    // Stash the resume target instead of setting current* — init() fires
+    // savePrefs() (theme/font) before openChapter() reads the saved position,
+    // and a non-null currentBook would clobber that chapter's slot with page 0
+    state.resumeBook = saved.currentBook ?? null;
+    state.resumeChapter = saved.currentChapter ?? null;
+    state.positions = (saved.positions && typeof saved.positions === 'object') ? saved.positions : {};
     state.mode = saved.mode ?? 'page';
-    state.scrollFraction = saved.scrollFraction ?? 0;
     state.playbackSpeed = saved.playbackSpeed ?? 1;
     state.fadeEnabled = saved.fadeEnabled ?? true;
   } catch { /* ignore */ }
 }
 
+function getSavedPosition(bookId, chapterId) {
+  return state.positions[bookId]?.[chapterId] ?? { page: 0, scrollFraction: 0 };
+}
+
+function saveCurrentPosition() {
+  if (!state.currentBook || !state.currentChapter) return;
+  const forBook = state.positions[state.currentBook] ?? (state.positions[state.currentBook] = {});
+  forBook[state.currentChapter] = {
+    page: state.currentPage,
+    scrollFraction: state.scrollFraction,
+  };
+}
+
 function savePrefs() {
+  saveCurrentPosition();
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     fontSize: state.fontSize,
     theme: state.theme,
     currentBook: state.currentBook,
     currentChapter: state.currentChapter,
-    currentPage: state.currentPage,
+    positions: state.positions,
     mode: state.mode,
-    scrollFraction: state.scrollFraction,
     playbackSpeed: state.playbackSpeed,
     fadeEnabled: state.fadeEnabled,
   }));
@@ -138,7 +164,12 @@ function renderLibrary() {
 
     const header = document.createElement('div');
     header.className = 'book-card-header';
-    header.innerHTML = `<span>${book.title}</span><span class="chapter-count">${book.chapters.length} chapters</span>`;
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = book.title;
+    const countSpan = document.createElement('span');
+    countSpan.className = 'chapter-count';
+    countSpan.textContent = `${book.chapters.length} chapters`;
+    header.append(titleSpan, countSpan);
 
     const list = document.createElement('ul');
     list.className = 'chapter-list collapsed';
@@ -164,6 +195,7 @@ function renderLibrary() {
 // --- Navigation ---
 
 function showLibrary() {
+  saveCurrentPosition();
   state.currentBook = null;
   state.currentChapter = null;
   state.currentPage = 0;
@@ -197,6 +229,9 @@ async function openChapter(bookId, chapterId) {
 
   state.currentBook = bookId;
   state.currentChapter = chapterId;
+  const pos = getSavedPosition(bookId, chapterId);
+  state.currentPage = pos.page;
+  state.scrollFraction = pos.scrollFraction;
 
   showReader();
   renderSidebar();
@@ -209,7 +244,18 @@ async function openChapter(bookId, chapterId) {
       if (!resp.ok) throw new Error('Failed to load chapter');
       return resp.text();
     }));
-    renderChapter(parts.join('\n\n'));
+
+    // Derive figures.json path from chapter path (same directory)
+    const chapterPath = chapter.path;
+    const lastSlash = chapterPath.lastIndexOf('/');
+    const chapterDir = lastSlash >= 0 ? chapterPath.slice(0, lastSlash) : '';
+    let figuresData = null;
+    try {
+      const figResp = await fetch(BASE + (chapterDir ? chapterDir + '/' : '') + 'figures.json');
+      if (figResp.ok) figuresData = await figResp.json();
+    } catch { /* figures.json optional */ }
+
+    renderChapter(parts.join('\n\n'), figuresData, chapterDir);
 
     const book = findBook(bookId);
     $('#book-title-text').textContent = book?.title || '';
@@ -236,7 +282,7 @@ async function openChapter(bookId, chapterId) {
       savePrefs();
     });
   } catch (err) {
-    $('#reader-content').innerHTML = `<div class="loading">Error loading chapter: ${err.message}</div>`;
+    $('#reader-content').innerHTML = `<div class="loading">Error loading chapter: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -253,11 +299,7 @@ function renderSidebar() {
     const item = document.createElement('div');
     item.className = 'toc-item' + (ch.id === state.currentChapter ? ' active' : '');
     item.textContent = ch.title;
-    item.addEventListener('click', () => {
-      state.currentPage = 0;
-      state.scrollFraction = 0;
-      openChapter(state.currentBook, ch.id);
-    });
+    item.addEventListener('click', () => openChapter(state.currentBook, ch.id));
     toc.appendChild(item);
   }
 }
@@ -273,7 +315,60 @@ function toggleSidebar() {
 
 // --- Rendering ---
 
-function renderChapter(markdownText) {
+// --- YAML Front Matter ---
+
+function parseYamlFrontMatter(text) {
+  const lines = text.split('\n');
+  if (!lines.length || lines[0].trim() !== '---') return { meta: {}, body: text };
+  let endIdx = null;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === '---') { endIdx = i; break; }
+  }
+  if (endIdx === null) return { meta: {}, body: text };
+
+  const meta = {};
+  let currentKey = null;
+  for (let i = 1; i < endIdx; i++) {
+    const line = lines[i];
+    if (line.startsWith('  - ')) {
+      if (currentKey !== null) {
+        if (!Array.isArray(meta[currentKey])) meta[currentKey] = [];
+        meta[currentKey].push(line.slice(4).trim());
+      }
+    } else if (line.includes(':')) {
+      const colon = line.indexOf(':');
+      const key = line.slice(0, colon).trim();
+      const val = line.slice(colon + 1).trim();
+      currentKey = key;
+      meta[key] = val || [];
+    }
+  }
+  const body = lines.slice(endIdx + 1).join('\n');
+  return { meta, body };
+}
+
+function buildPaperMetaHtml(meta) {
+  const parts = [];
+  const title = meta.title;
+  const authors = meta.authors;
+  const journal = meta.journal;
+  const year = meta.year;
+  if (!title && !authors && !journal && !year) return '';
+  if (title && title !== 'Unknown') {
+    parts.push(`<div class="paper-meta-title">${escapeHtml(title)}</div>`);
+  }
+  if (authors) {
+    const authorStr = Array.isArray(authors) ? authors.join('; ') : authors;
+    if (authorStr) parts.push(`<div class="paper-meta-authors">${escapeHtml(authorStr)}</div>`);
+  }
+  if (journal || year) {
+    const jy = [journal, year].filter(Boolean).join(' \u00B7 ');
+    parts.push(`<div class="paper-meta-journal">${escapeHtml(jy)}</div>`);
+  }
+  return parts.length ? `<div class="paper-meta">${parts.join('')}</div>` : '';
+}
+
+function renderChapter(markdownText, figuresData, chapterDir) {
   // New content invalidates any in-progress playback
   if (playback.active) {
     pausePlayback();
@@ -283,10 +378,14 @@ function renderChapter(markdownText) {
     document.body.classList.remove('playback-active');
     updatePlaybackButtons();
   }
-  const html = md.render(markdownText);
+  const { meta, body } = parseYamlFrontMatter(markdownText);
+  const paperMetaHtml = buildPaperMetaHtml(meta);
+  const html = paperMetaHtml + md.render(body);
   const container = $('#reader-content');
   container.innerHTML = html;
   setupFootnotePopovers(container);
+  setupCitationPopovers(container);
+  setupFigurePopovers(container, figuresData || null, chapterDir || '');
 }
 
 // --- Pagination ---
@@ -862,12 +961,211 @@ function dismissPopover() {
   document.removeEventListener('click', onDismissPopover);
 }
 
+// --- Citation Popovers ---
+
+function setupCitationPopovers(container) {
+  // Build reference map from numbered list
+  const refMap = {};
+
+  // Try <ol> whose items start with digits
+  const ols = container.querySelectorAll('ol');
+  let refOl = null;
+  for (const ol of ols) {
+    const firstLi = ol.querySelector('li');
+    if (firstLi && /^\d/.test(firstLi.textContent.trim())) {
+      refOl = ol;
+      break;
+    }
+  }
+
+  if (refOl) {
+    const items = refOl.querySelectorAll('li');
+    items.forEach((li, i) => {
+      refMap[i + 1] = li.textContent.trim();
+    });
+  } else {
+    // Fallback: <p> elements matching "N. text"
+    const paras = container.querySelectorAll('p');
+    paras.forEach(p => {
+      const m = p.textContent.trim().match(/^(\d+)\.\s/);
+      if (m) refMap[parseInt(m[1], 10)] = p.textContent.trim();
+    });
+  }
+
+  if (!Object.keys(refMap).length) return;
+
+  // Walk text nodes, skip .footnotes, headings, and the refOl
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== container) {
+        if (p.classList && (p.classList.contains('footnotes') || p.classList.contains('paper-meta'))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (refOl && p === refOl) return NodeFilter.FILTER_REJECT;
+        const tag = p.tagName;
+        if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+
+  // Citation context only: numbers in brackets/parens like [3], [1, 2], (3),
+  // or bare digit runs inside <sup> elements. Bare numbers in prose don't match.
+  const bracketCiteRe = /[[(](\d+(?:,\s*\d+)*)[\])]/g;
+  const supCiteRe = /(\d+(?:,\s*\d+)*)/g;
+
+  for (const textNode of textNodes) {
+    const val = textNode.nodeValue;
+    const citeRe = textNode.parentElement?.closest('sup') ? supCiteRe : bracketCiteRe;
+    citeRe.lastIndex = 0;
+    let match;
+    const spans = [];
+    let lastIdx = 0;
+
+    while ((match = citeRe.exec(val)) !== null) {
+      const nums = match[1].split(',').map(s => parseInt(s.trim(), 10));
+      if (!nums.every(n => refMap[n])) continue;
+
+      spans.push({ start: match.index, end: match.index + match[0].length, nums });
+    }
+
+    if (!spans.length) continue;
+
+    const frag = document.createDocumentFragment();
+    for (const sp of spans) {
+      if (lastIdx < sp.start) {
+        frag.appendChild(document.createTextNode(val.slice(lastIdx, sp.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'cite-ref';
+      span.dataset.refs = sp.nums.join(',');
+      span.textContent = val.slice(sp.start, sp.end);
+      span.addEventListener('mouseover', (e) => {
+        const refs = e.currentTarget.dataset.refs.split(',').map(Number);
+        const html = refs.map(n => `<p>${escapeHtml(refMap[n])}</p>`).join('');
+        showFootnotePopover(html, e.clientX, e.clientY);
+      });
+      span.addEventListener('mouseout', dismissPopover);
+      frag.appendChild(span);
+      lastIdx = sp.end;
+    }
+    if (lastIdx < val.length) {
+      frag.appendChild(document.createTextNode(val.slice(lastIdx)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+// --- Figure Popovers ---
+
+function setupFigurePopovers(container, figuresData, chapterDir) {
+  const figMap = {};
+  if (figuresData && figuresData.length) {
+    for (const fig of figuresData) {
+      figMap[fig.figure_id] = fig;
+    }
+  }
+
+  const figRe = /\b(Figure|Fig\.)\s+(S?\d+[A-Za-z]?)/g;
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== container) {
+        if (p.classList && (p.classList.contains('footnotes') || p.classList.contains('paper-meta'))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+
+  for (const textNode of textNodes) {
+    const val = textNode.nodeValue;
+    figRe.lastIndex = 0;
+    let match;
+    const spans = [];
+    let lastIdx = 0;
+
+    while ((match = figRe.exec(val)) !== null) {
+      spans.push({ start: match.index, end: match.index + match[0].length, id: match[2], full: match[0] });
+    }
+    if (!spans.length) continue;
+
+    const frag = document.createDocumentFragment();
+    for (const sp of spans) {
+      if (lastIdx < sp.start) {
+        frag.appendChild(document.createTextNode(val.slice(lastIdx, sp.start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'fig-ref';
+      span.dataset.figId = sp.id;
+      span.textContent = sp.full;
+      if (figMap[sp.id]) {
+        span.addEventListener('click', () => showFigureModal(figMap[sp.id], chapterDir));
+      }
+      frag.appendChild(span);
+      lastIdx = sp.end;
+    }
+    if (lastIdx < val.length) {
+      frag.appendChild(document.createTextNode(val.slice(lastIdx)));
+    }
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+function showFigureModal(fig, chapterDir) {
+  dismissFigureModal();
+  const modal = document.createElement('div');
+  modal.className = 'figure-modal';
+
+  const content = document.createElement('div');
+  content.className = 'figure-modal-content';
+
+  const img = document.createElement('img');
+  const imgBase = chapterDir ? BASE + chapterDir + '/' : BASE;
+  img.src = imgBase + fig.image_path;
+  img.alt = fig.caption || '';
+
+  const caption = document.createElement('div');
+  caption.className = 'figure-modal-caption';
+  caption.textContent = fig.caption || '';
+
+  content.appendChild(img);
+  if (fig.caption) content.appendChild(caption);
+  modal.appendChild(content);
+  document.body.appendChild(modal);
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) dismissFigureModal();
+  });
+}
+
+function dismissFigureModal() {
+  document.querySelectorAll('.figure-modal').forEach(el => el.remove());
+}
+
 // --- Keyboard Navigation ---
 
 function handleKeydown(e) {
-  // Escape: close popover, or return to library
+  // Escape: close modal/popover, or return to library
   if (e.key === 'Escape') {
-    if (document.querySelector('.footnote-popover')) {
+    if (document.querySelector('.figure-modal')) {
+      dismissFigureModal();
+    } else if (document.querySelector('.footnote-popover')) {
       dismissPopover();
     } else if (state.currentChapter) {
       showLibrary();
@@ -993,10 +1291,10 @@ async function init() {
   }
 
   // Restore reading position if available
-  if (state.currentBook && state.currentChapter) {
-    const chapter = findChapter(state.currentBook, state.currentChapter);
+  if (state.resumeBook && state.resumeChapter) {
+    const chapter = findChapter(state.resumeBook, state.resumeChapter);
     if (chapter) {
-      openChapter(state.currentBook, state.currentChapter);
+      openChapter(state.resumeBook, state.resumeChapter);
       return;
     }
   }

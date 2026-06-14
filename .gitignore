@@ -11,3 +11,8 @@ synced/
 library.json
 .coverage
 .claude/worktrees/
+
+# py2app build output
+dist/
+build/
+_desktop_build/build/

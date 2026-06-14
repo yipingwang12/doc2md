@@ -8,6 +8,7 @@ from doc2md.assembly.cleaner import (
     join_broken_sentences,
     normalize_ligatures,
     strip_headers_footers,
+    strip_preprint_watermarks,
 )
 from doc2md.models import Page
 
@@ -167,3 +168,53 @@ class TestJoinBrokenSentences:
     def test_uppercase_start_not_joined(self):
         result = join_broken_sentences("end of paragraph", "New paragraph starts")
         assert "\n\n" in result
+
+
+class TestStripPreprintWatermarks:
+    def test_removes_cc_by_line(self):
+        page = _page("Body text.\nCC-BY 4.0 International license\nMore body text.")
+        result = strip_preprint_watermarks([page])
+        assert "CC-BY" not in result[0].raw_text
+        assert "Body text." in result[0].raw_text
+        assert "More body text." in result[0].raw_text
+
+    def test_removes_not_certified_peer_review(self):
+        page = _page("not certified by peer review) is the author/funder")
+        result = strip_preprint_watermarks([page])
+        assert "not certified" not in result[0].raw_text
+
+    def test_removes_biorxiv_line(self):
+        page = _page("posted on bioRxiv as a preprint.")
+        result = strip_preprint_watermarks([page])
+        assert "bioRxiv" not in result[0].raw_text
+
+    def test_removes_copyright_holder_line(self):
+        page = _page("The copyright holder for this preprint (which was")
+        result = strip_preprint_watermarks([page])
+        assert "copyright holder" not in result[0].raw_text
+
+    def test_removes_standalone_period(self):
+        page = _page("Body.\n.\nMore body.")
+        result = strip_preprint_watermarks([page])
+        assert result[0].raw_text == "Body.\nMore body."
+
+    def test_removes_standalone_semicolon(self):
+        page = _page("Body.\n;\nMore body.")
+        result = strip_preprint_watermarks([page])
+        assert result[0].raw_text == "Body.\nMore body."
+
+    def test_normal_text_preserved(self):
+        page = _page("The experiments were conducted under standard conditions.")
+        result = strip_preprint_watermarks([page])
+        assert result[0].raw_text == page.raw_text
+
+    def test_multiple_pages(self):
+        pages = [
+            _page("CC-BY 4.0 International license\nBody A."),
+            _page("Body B.\nauthor/funder granted a license."),
+        ]
+        result = strip_preprint_watermarks(pages)
+        assert "CC-BY" not in result[0].raw_text
+        assert "author/funder" not in result[1].raw_text
+        assert "Body A." in result[0].raw_text
+        assert "Body B." in result[1].raw_text

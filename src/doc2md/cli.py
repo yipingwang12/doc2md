@@ -141,3 +141,97 @@ def search(ctx, term, output_dir, context):
     results_dir = Path(output_dir) if output_dir else Path(config.paths.output_dir)
     result = search_all(results_dir, term, context)
     click.echo(format_results(result))
+
+
+# ---------------------------------------------------------------------------
+# Papers sub-group
+# ---------------------------------------------------------------------------
+
+@click.group()
+def papers():
+    """Academic paper pipeline: PDF → Markdown + entity index."""
+
+
+@papers.command(name="process")
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--pmid", default=None, help="Override PMID for NER lookup.")
+@click.option("--output-dir", type=click.Path(), default=None,
+              help="Override papers output directory.")
+@click.option("--force", is_flag=True, help="Reprocess even if already done.")
+@click.pass_context
+def papers_process(ctx, path, pmid, output_dir, force):
+    """Process a single academic paper PDF."""
+    from doc2md.papers.pipeline import process_paper
+    config = ctx.obj["config"]
+    if output_dir:
+        config.papers.papers_dir = output_dir
+    click.echo(f"Processing paper: {path}")
+    paths = process_paper(Path(path), config, force=force, pmid=pmid)
+    for p in paths:
+        click.echo(f"  Written: {p}")
+    if not paths:
+        click.echo("  No output produced.")
+
+
+@papers.command(name="build-index")
+@click.option("--papers-dir", type=click.Path(exists=True), default=None,
+              help="Directory containing processed papers (default: config.papers.papers_dir).")
+@click.pass_context
+def papers_build_index(ctx, papers_dir):
+    """Rebuild entity index from all papers' entities.json files."""
+    import json
+    from dataclasses import asdict
+    from doc2md.papers.index_builder import (
+        build_entity_index, write_entity_index_json, write_entity_index_md,
+    )
+    from doc2md.papers.models import NamedEntity, PaperDocument
+    config = ctx.obj["config"]
+    base = Path(papers_dir) if papers_dir else Path(config.papers.papers_dir)
+
+    paper_docs = []
+    for entities_file in sorted(base.glob("*/entities.json")):
+        source_name = entities_file.parent.name
+        raw = json.loads(entities_file.read_text())
+        entities = [NamedEntity(**e) for e in raw]
+        paper_docs.append(PaperDocument(source_name=source_name, entities=entities))
+
+    index = build_entity_index(paper_docs)
+    write_entity_index_json(index, base / "entity_index.json")
+    write_entity_index_md(index, base / "entity_index.md")
+    click.echo(f"Indexed {len(index)} entities across {len(paper_docs)} papers.")
+    click.echo(f"  Written: {base / 'entity_index.json'}")
+
+
+@papers.command(name="search-entity")
+@click.argument("entity_query")
+@click.option("--index", "index_path", type=click.Path(), default=None,
+              help="Path to entity_index.json.")
+@click.option("--type", "entity_type", default=None,
+              help="Filter by entity type (gene, disease, chemical, …).")
+@click.pass_context
+def papers_search_entity(ctx, entity_query, index_path, entity_type):
+    """Search for an entity across all processed papers."""
+    from doc2md.papers.index_builder import load_entity_index
+    config = ctx.obj["config"]
+    idx_path = Path(index_path) if index_path else Path(config.papers.papers_dir) / "entity_index.json"
+    index = load_entity_index(idx_path)
+
+    query = entity_query.lower()
+    matches = [
+        entry for entry in index.values()
+        if query in entry.display_name.lower() or query in entry.entity_id.lower()
+    ]
+    if entity_type:
+        matches = [e for e in matches if e.entity_type == entity_type]
+
+    if not matches:
+        click.echo(f"No entities found matching '{entity_query}'.")
+        return
+
+    for entry in sorted(matches, key=lambda e: e.display_name.lower()):
+        click.echo(f"\n{entry.display_name} [{entry.entity_type}] ({entry.entity_id})")
+        for occ in entry.occurrences:
+            click.echo(f"  {occ.paper_source} / {occ.section}: {occ.context[:120]}")
+
+
+main.add_command(papers)

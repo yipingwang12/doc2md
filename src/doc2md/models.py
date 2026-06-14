@@ -30,6 +30,7 @@ class TextBlock:
     heading_level: int | None = None
     footnote_id: str | None = None
     citation_key: str | None = None
+    section_label: str | None = None  # abstract | introduction | methods | results | discussion | references
 
 
 @dataclass

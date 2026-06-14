@@ -176,16 +176,34 @@ def _split_footnote_block(block: dict) -> list[tuple[str, str]]:
 
 _PAGE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _URL_RE = re.compile(r"https?://\S+")
+_PREPRINT_WATERMARK_RES = [
+    re.compile(r"CC-BY\s+\d", re.IGNORECASE),
+    re.compile(r"not certified by peer review", re.IGNORECASE),
+    re.compile(r"bioRxiv\b", re.IGNORECASE),
+    re.compile(r"medrxiv\b", re.IGNORECASE),
+    re.compile(r"The copyright holder for this preprint", re.IGNORECASE),
+    re.compile(r"author/funder", re.IGNORECASE),
+    re.compile(r"perpetuity\b", re.IGNORECASE),
+    re.compile(r"^[\u25CF\u2022\u25E6\u25AA\u25AB\u2023\u2043\s]+$"),  # symbol-only lines
+]
+_FIGURE_PANEL_RE = re.compile(r"^([A-Za-z]|\d{1,3}/\d{1,3})$")
 
 
 def _is_boilerplate(text: str) -> bool:
-    """Check if text is a page number, URL, or other boilerplate."""
+    """Check if text is a page number, URL, preprint watermark, or other boilerplate."""
     stripped = text.strip()
     if _PAGE_NUM_RE.match(stripped):
         return True
     if _URL_RE.search(stripped) and len(stripped) < 150:
         return True
+    if any(pat.search(stripped) for pat in _PREPRINT_WATERMARK_RES):
+        return True
     return False
+
+
+def _is_figure_panel_label(text: str) -> bool:
+    """Return True if text is a figure panel label (single letter or N/M fraction)."""
+    return bool(_FIGURE_PANEL_RE.match(text.strip()))
 
 
 def _is_all_caps_heading(text: str) -> bool:
@@ -202,6 +220,15 @@ def _is_all_caps_heading(text: str) -> bool:
 
 
 _MATH_SYMBOLS_RE = re.compile(r"[α-ωΑ-Ω∑∏∫√≤≥≠±×÷∈∉⊂⊃∪∩→←↔∞]")
+_MATH_EXPRESSION_RE = re.compile(
+    r"[=\u2212\u02C6\u02DC]"       # =, − (typeset minus), ˆ (hat), ˜ (tilde)
+    r"|[α-ωΑ-Ω∑∏∫√≤≥≠±×÷∈∉⊂⊃∪∩→←↔∞]"  # Greek letters and math operators
+)
+
+
+def _is_math_expression(text: str) -> bool:
+    """Return True if text looks like a mathematical expression rather than a heading."""
+    return bool(_MATH_EXPRESSION_RE.search(text.strip()))
 
 
 def _is_prose_fragment(line: str) -> bool:
@@ -270,11 +297,14 @@ def _classify_block(
     if _is_boilerplate(text):
         return []
 
-    # Filter lines repeated across many pages (running headers/footers, author names)
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped in profile.repeated_lines:
-            text = text.replace(line, "").strip()
+    # Filter lines repeated across many pages (running headers/footers, author
+    # names). Whole lines only — substring removal would also delete legitimate
+    # occurrences of the phrase inside body prose.
+    if profile.repeated_lines:
+        text = "\n".join(
+            line for line in text.splitlines()
+            if line.strip() not in profile.repeated_lines
+        ).strip()
     if not text or _is_boilerplate(text):
         return []
 
@@ -284,6 +314,8 @@ def _classify_block(
 
     # Heading: larger font than body text
     if dom_size > profile.body_size + 1.0 and len(text) < 200:
+        if _is_figure_panel_label(text) or _is_math_expression(text):
+            return []
         level = 1
         if profile.heading_sizes:
             for i, hs in enumerate(profile.heading_sizes):
@@ -299,6 +331,8 @@ def _classify_block(
 
     # Heading: ALL CAPS body-sized text (section headings)
     if _is_all_caps_heading(text) and abs(dom_size - profile.body_size) < 1.5:
+        if _is_math_expression(text):
+            return []
         return [TextBlock(
             text=text,
             block_type="heading",
@@ -315,6 +349,8 @@ def _classify_block(
     ):
         dom_font = _dominant_font(block)
         if dom_font in profile.heading_fonts:
+            if _is_figure_panel_label(text) or _is_math_expression(text):
+                return []
             return [TextBlock(
                 text=text,
                 block_type="heading",
