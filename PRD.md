@@ -161,6 +161,29 @@ Cascade stages missing their Python dependency are silently skipped at runtime; 
 - ~~**Cascade image-only page over-escalation**~~ — fixed: `default_quality_check` now returns `True` for empty `raw_text`, short-circuiting at Tesseract for image-only pages
 - **Cascade title-detection regression** — Tesseract and Apple Vision don't provide font metadata (block dicts), so their pages bypass `analysis/segmenter.py`'s font-based title/heading classification. Pages that would have been classified as headings via font size/name in a Surya-only run fall through to raw-text heuristics in the cascade run
 
+## E-Text Ingestion (Reader-Only)
+
+Books that already exist as OCR text (e.g. archive.org "Full text" pages) skip the PDF/OCR pipeline. A per-book script writes chapter folders straight into `results/`, then `reader/build_library.py` adds them to the reader.
+
+**Blindsight** (Peter Watts, CC BY-NC-SA 2.5; source `PeterWatts_Blindsight_djvu.html`, the djvu OCR of the Tor hardcover) — `scripts/clean_blindsight.py`:
+
+```
+python scripts/clean_blindsight.py ~/Downloads/PeterWatts_Blindsight_djvu.html results/
+python reader/build_library.py
+```
+
+- Extracts the `<pre>` text; drops jacket copy, praise and TOC
+- Strips page headers ("Peter Watts / N / Blindsight", incl. one-line and interleaved forms)
+- Reflows hard-wrapped lines: blank line = paragraph break; at page breaks and adjacent lines, a break needs a terminal-punctuated line that is short (< 56 chars) or followed by an opening quote
+- De-hyphenates line-end splits; keeps the hyphen when both halves are words and the joined form is not (`record-shattering`), or when the head already holds a hyphen
+- Chapters split at epigraph attributions (hard-coded raw line numbers): Prologue, Theseus 1–7, Rorschach 1–14, Charybdis, Acknowledgments, Notes and References, CC licence — 27 chapters, ~107k words. Titles = part + epigraph opening
+- Epigraphs → blockquotes; `*` → scene break; Necker-cube figure residue → `[Figure: Necker cube]`
+- Hand-checked OCR fixes (`FIXES` list + rules): `l`/`T`/`V` for `!`/`?` (`downl`, `knowT`, `BatesV`), italic `I` read as `/`, `II`/` ii` for `—"`, `fm` for `fi`, lost superscripts (`1.8×10¹⁰ kg`), URL damage (`http :`, `.conV`)
+- Notes: page-bottom citation blocks lifted out of the paragraphs they interrupt and placed as a blockquote after them; in-text reference numbers → Unicode superscripts (accepted only in ascending sequence). Not linked 1:1 — many citation numbers are lost or garbled in the OCR
+- Also writes plain text `results/blindsight/Blindsight.txt`
+
+Output stays in git-ignored `results/` (book text is never committed). Known limits: italics lost; paragraph breaks at full-width page-end lines are guesses; licence text loosely formatted.
+
 ## Non-Goals (Current Scope)
 
 - Cloud LLM support (currently Ollama-only)
